@@ -311,21 +311,19 @@ async function placeOrder() {
   ordering.value = true
   try {
     if (orderForm.type === 'market') {
-      await btcApi.marketOrder({
-        token_id: selectedTokenId.value,
-        amount: orderForm.amount,
-        side: orderForm.side,
-        order_type: 'FOK',
-      })
-    } else {
+      // 市价单：用盘口价下 GTC 限价单（避免 FOK 流动性不足失败）
+      const bookPrice = orderForm.side === 'BUY'
+        ? (asks.value.length > 0 ? Math.min(...asks.value.map((a: any) => parseFloat(a.price))) : yesPrice.value)
+        : (bids.value.length > 0 ? Math.max(...bids.value.map((b: any) => parseFloat(b.price))) : noPrice.value)
+      const price = Math.round(bookPrice * 100) / 100
+      const size = Math.floor(orderForm.amount / price)
       await btcApi.order({
         token_id: selectedTokenId.value,
-        price: orderForm.price,
-        size: orderForm.amount,
+        price,
+        size,
         side: orderForm.side,
         order_type: 'GTC',
         tick_size: selectedTickSize.value,
-        neg_risk: selectedNegRisk.value,
       })
     }
     ElMessage.success('下单成功')
