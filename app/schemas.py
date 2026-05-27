@@ -146,3 +146,12 @@ class ScanResultResp(BaseModel):
 class AdminActionResp(BaseModel):
     success: bool
     message: str
+
+
+class ChangePasswordReq(BaseModel):
+    new_password: str
+
+
+class SelfChangePasswordReq(BaseModel):
+    old_password: str
+    new_password: str

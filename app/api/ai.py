@@ -31,6 +31,9 @@ async def ai_analyze_market(req: AIMarketAnalyzeReq, user: User = Depends(get_cu
     """市场专用分析"""
     market = await gamma_api.get_market_by_slug(req.market_slug)
     if not market:
+        # 尝试作为 event slug
+        market = await gamma_api.get_event(req.market_slug)
+    if not market:
         raise HTTPException(404, "市场不存在")
 
     config = await get_active_ai_config(db, req.ai_config_id)

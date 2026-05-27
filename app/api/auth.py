@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.config import get_settings
 from app.models import User
-from app.schemas import RegisterReq, LoginReq, TokenResp, UserResp
+from app.schemas import RegisterReq, LoginReq, TokenResp, UserResp, SelfChangePasswordReq, AdminActionResp
 from app.deps import get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
@@ -40,10 +40,19 @@ async def login(req: LoginReq, db: AsyncSession = Depends(get_db)):
     if user.status != "approved":
         raise HTTPException(403, f"账户状态: {user.status}，等待管理员审核")
     expire = datetime.now(timezone.utc) + timedelta(minutes=get_settings().jwt_expire_minutes)
-    token = jwt.encode({"sub": user.id, "exp": expire}, get_settings().jwt_secret, algorithm=get_settings().jwt_algorithm)
+    token = jwt.encode({"sub": str(user.id), "exp": expire}, get_settings().jwt_secret, algorithm=get_settings().jwt_algorithm)
     return TokenResp(access_token=token)
 
 
 @router.get("/me", response_model=UserResp)
 async def me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.post("/change-password", response_model=AdminActionResp)
+async def change_password(req: SelfChangePasswordReq, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not pwd_ctx.verify(req.old_password, user.password_hash):
+        raise HTTPException(400, "原密码错误")
+    user.password_hash = pwd_ctx.hash(req.new_password)
+    await db.commit()
+    return AdminActionResp(success=True, message="密码修改成功")

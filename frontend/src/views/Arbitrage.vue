@@ -12,7 +12,7 @@
         </div>
       </template>
 
-      <el-table :data="results" size="small" v-loading="loading">
+      <el-table :data="results" size="small" v-loading="loading" @row-click="selectRow" highlight-current-row>
         <el-table-column prop="title" label="事件" show-overflow-tooltip />
         <el-table-column label="YES总和" width="100">
           <template #default="{ row }">{{ row.yes_sum.toFixed(4) }}</template>
@@ -34,6 +34,22 @@
           </template>
         </el-table-column>
       </el-table>
+    </el-card>
+
+    <el-card style="margin-top:16px">
+      <template #header>AI 套利分析</template>
+      <el-row :gutter="12" align="middle">
+        <el-col :span="8">
+          <el-select v-model="aiConfigId" placeholder="选择AI模型" size="small" style="width:100%">
+            <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-col>
+        <el-col :span="8">
+          <el-button size="small" type="primary" @click="runPredict" :loading="predicting" :disabled="!selected || !aiConfigId" style="width:100%">AI 套利分析</el-button>
+        </el-col>
+      </el-row>
+      <div v-if="prediction" style="margin-top:12px;white-space:pre-wrap;font-size:13px">{{ prediction }}</div>
+      <div v-if="!selected" style="margin-top:8px;color:#999;font-size:12px">请先点击表格行选择一个套利机会</div>
     </el-card>
 
     <el-dialog v-model="showDetail" title="套利详情" width="700">
@@ -61,8 +77,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { arbitrageApi } from '../api'
+import { ref, onMounted } from 'vue'
+import { arbitrageApi, aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
@@ -70,6 +86,10 @@ const threshold = ref(0.03)
 const results = ref<any[]>([])
 const showDetail = ref(false)
 const selected = ref<any>(null)
+const aiProviders = ref<any[]>([])
+const aiConfigId = ref<number | null>(null)
+const predicting = ref(false)
+const prediction = ref('')
 
 async function scan() {
   loading.value = true
@@ -80,9 +100,15 @@ async function scan() {
   } catch {} finally { loading.value = false }
 }
 
+function selectRow(row: any) {
+  selected.value = row
+  prediction.value = ''
+}
+
 function expandDetail(row: any) {
   selected.value = row
   showDetail.value = true
+  prediction.value = ''
 }
 
 async function executeArb(row: any) {
@@ -99,4 +125,18 @@ async function executeArb(row: any) {
     ElMessage.success('套利下单成功')
   } catch {}
 }
+
+async function runPredict() {
+  if (!selected.value || !aiConfigId.value) return
+  predicting.value = true
+  prediction.value = ''
+  try {
+    const { data } = await aiApi.analyzeArbitrage({ ai_config_id: aiConfigId.value, event_slug: selected.value.event_slug, yes_sum: selected.value.yes_sum })
+    prediction.value = data.analysis
+  } catch {} finally { predicting.value = false }
+}
+
+onMounted(() => {
+  aiApi.providers().then(({ data }) => { aiProviders.value = data }).catch(() => {})
+})
 </script>

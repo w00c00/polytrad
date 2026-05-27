@@ -3,6 +3,22 @@
     <el-row :gutter="20">
       <el-col :span="12">
         <el-card>
+          <template #header>修改密码</template>
+          <el-form label-position="top" size="small">
+            <el-form-item label="原密码">
+              <el-input v-model="pwdForm.old_password" type="password" show-password />
+            </el-form-item>
+            <el-form-item label="新密码">
+              <el-input v-model="pwdForm.new_password" type="password" show-password placeholder="至少 6 位" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="pwdLoading" @click="changePwd">修改密码</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </el-col>
+      <el-col :span="12">
+        <el-card>
           <template #header>钱包管理</template>
           <el-form label-position="top" size="small">
             <el-form-item label="私钥 (MetaMask)">
@@ -31,10 +47,11 @@
                 <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '活跃' : '停用' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="120">
+            <el-table-column label="操作" width="180">
               <template #default="{ row }">
                 <el-button v-if="row.is_active" size="small" type="warning" @click="deactivate(row.id)">停用</el-button>
                 <el-button v-else size="small" type="success" @click="activate(row.id)">启用</el-button>
+                <el-button size="small" type="danger" link @click="removeWallet(row.id)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -94,8 +111,8 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { walletApi, notifyApi } from '../api'
-import { ElMessage } from 'element-plus'
+import { walletApi, notifyApi, authApi } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const walletLoading = ref(false)
 const wallets = ref<any[]>([])
@@ -105,6 +122,20 @@ const notifyTab = ref('serverchan')
 const walletForm = reactive({ private_key: '', funder_address: '', chain_id: 137 })
 const scForm = reactive({ sendkey: '' })
 const tgForm = reactive({ bot_token: '', chat_id: '' })
+const pwdForm = reactive({ old_password: '', new_password: '' })
+const pwdLoading = ref(false)
+
+async function changePwd() {
+  if (!pwdForm.old_password || !pwdForm.new_password) { ElMessage.warning('请填写完整'); return }
+  if (pwdForm.new_password.length < 6) { ElMessage.warning('新密码至少 6 位'); return }
+  pwdLoading.value = true
+  try {
+    await authApi.changePassword(pwdForm)
+    ElMessage.success('密码修改成功')
+    pwdForm.old_password = ''
+    pwdForm.new_password = ''
+  } catch {} finally { pwdLoading.value = false }
+}
 
 async function setupWallet() {
   walletLoading.value = true
@@ -130,6 +161,15 @@ async function deactivate(id: number) {
 async function activate(id: number) {
   await walletApi.activate(id)
   loadWallets()
+}
+
+async function removeWallet(id: number) {
+  try {
+    await ElMessageBox.confirm('确认删除该钱包配置？', '警告', { type: 'warning' })
+    await walletApi.delete(id)
+    ElMessage.success('已删除')
+    loadWallets()
+  } catch {}
 }
 
 async function saveNotify(channel: string) {

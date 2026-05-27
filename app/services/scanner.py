@@ -2,14 +2,80 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.services.polymarket import gamma_api, clob_api
+from app.services.polymarket import gamma_api, clob_api, to_beijing_time, translate_title
 from app.models import ScanResult
 
 logger = logging.getLogger(__name__)
 
 # Polymarket 政治相关 tag 的常见 slug 片段
 POLITICAL_KEYWORDS = ["politic", "election", "president", "congress", "senate", "governor", "democrat", "republican", "trump", "biden"]
+CHINA_KEYWORDS = ["china", "chinese", "beijing", "xi jinping", "xi jin ping", "ccp", "communist party of china", "taiwan", "hong kong", "hongkong", "tibet", "xinjiang", "中国", "中共", "习近平", "台湾", "香港", "西藏", "新疆"]
 SPORTS_KEYWORDS = ["sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball", "tennis", "ufc", "f1", "world cup"]
+
+# BTC 短周期 series 列表
+BTC_SHORT_SERIES = [
+    {"slug": "btc-up-or-down-5m", "prefix": "btc-updown-5m", "label": "5分钟", "interval": 300},
+    {"slug": "btc-up-or-down-15m", "prefix": "btc-updown-15m", "label": "15分钟", "interval": 900},
+]
+
+
+def _extract_market_info(event: dict) -> list[dict]:
+    """从 event 提取 markets 信息"""
+    markets_info = []
+    for m in event.get("markets", []):
+        prices = m.get("outcomePrices", '["0.5","0.5"]')
+        if isinstance(prices, str):
+            prices = json.loads(prices)
+        yes_price = float(prices[0]) if prices else 0.5
+        token_ids = m.get("clobTokenIds", [])
+        if isinstance(token_ids, str):
+            token_ids = json.loads(token_ids)
+        markets_info.append({
+            "slug": m.get("slug", ""),
+            "question": m.get("question", ""),
+            "yes_price": yes_price,
+            "no_price": 1 - yes_price,
+            "token_ids": token_ids,
+            "neg_risk": m.get("negRisk", False),
+            "tick_size": m.get("minimumTickSize", "0.01"),
+        })
+    return markets_info
+
+
+async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
+    """扫描 BTC 短周期市场 (5m/15m)，通过时间戳直接查当前周期"""
+    results = []
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+
+    for series_info in BTC_SHORT_SERIES:
+        interval = series_info["interval"]
+        prefix = series_info["prefix"]
+
+        # 当前周期结束时间戳（向下取整到 interval 边界）
+        current_end = (now_ts // interval) * interval
+
+        # 查当前周期前后
+        for offset in range(-1, 6):
+            ts = current_end + offset * interval
+            slug = f"{prefix}-{ts}"
+            event = await gamma_api.get_event(slug)
+            if not event or not event.get("active"):
+                continue
+
+            start_time = event.get("startTime") or event.get("startDate")
+            end_time = event.get("endDate")
+
+            results.append({
+                "event_slug": event.get("slug", ""),
+                "title": event.get("title", ""),
+                "series_label": series_info["label"],
+                "start_time_bj": to_beijing_time(start_time),
+                "end_time_bj": to_beijing_time(end_time),
+                "markets": _extract_market_info(event),
+            })
+
+    results.sort(key=lambda x: x.get("start_time_bj", ""))
+    return results
 
 
 async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_volume: float = 10000) -> list[dict]:
@@ -37,6 +103,11 @@ async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_v
         if vol < min_volume:
             continue
 
+        # 排除中国相关内容
+        title_lower = (event.get("title") or "").lower()
+        if any(kw in title_lower for kw in CHINA_KEYWORDS):
+            continue
+
         markets_info = []
         for m in event.get("markets", []):
             prices = m.get("outcomePrices", '["0.5","0.5"]')
@@ -58,7 +129,8 @@ async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_v
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
-            "end_date": end_str,
+            "title_zh": translate_title(event.get("title", "")),
+            "end_date_bj": to_beijing_time(end_str),
             "volume_24h": vol,
             "markets": markets_info,
         })
@@ -85,6 +157,10 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
         if not any(kw in combined for kw in POLITICAL_KEYWORDS):
             continue
 
+        # 排除中国相关内容
+        if any(kw in combined for kw in CHINA_KEYWORDS):
+            continue
+
         markets_info = []
         for m in event.get("markets", []):
             prices = m.get("outcomePrices", '["0.5","0.5"]')
@@ -94,6 +170,7 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
             markets_info.append({
                 "slug": m.get("slug", ""),
                 "question": m.get("question", ""),
+                "question_zh": translate_title(m.get("question", "")),
                 "yes_price": yes_price,
                 "token_ids": json.loads(m["clobTokenIds"]) if isinstance(m.get("clobTokenIds"), str) else m.get("clobTokenIds", []),
                 "volume": float(m.get("volume") or 0),
@@ -104,7 +181,8 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
-            "start_date": event.get("startDate") or event.get("startDateIso"),
+            "title_zh": translate_title(event.get("title", "")),
+            "start_date_bj": to_beijing_time(event.get("startDate") or event.get("startDateIso")),
             "markets": markets_info,
         })
 
@@ -121,6 +199,11 @@ async def scan_arbitrage(db: AsyncSession, threshold: float = 0.03) -> list[dict
 
     results = []
     for event in events:
+        # 排除中国相关内容
+        title_lower = (event.get("title") or "").lower()
+        if any(kw in title_lower for kw in CHINA_KEYWORDS):
+            continue
+
         markets = event.get("markets", [])
         if len(markets) < 2:
             continue
@@ -159,6 +242,7 @@ async def scan_arbitrage(db: AsyncSession, threshold: float = 0.03) -> list[dict
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
+            "title_zh": translate_title(event.get("title", "")),
             "yes_sum": round(yes_sum, 4),
             "deviation": round(deviation, 4),
             "direction": direction,
@@ -194,6 +278,7 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
             markets_info.append({
                 "slug": m.get("slug", ""),
                 "question": m.get("question", ""),
+                "question_zh": translate_title(m.get("question", "")),
                 "yes_price": yes_price,
                 "token_ids": json.loads(m["clobTokenIds"]) if isinstance(m.get("clobTokenIds"), str) else m.get("clobTokenIds", []),
                 "volume": float(m.get("volume") or 0),
@@ -206,6 +291,8 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
+            "title_zh": translate_title(event.get("title", "")),
+            "end_date_bj": to_beijing_time(event.get("endDate") or event.get("endDateIso")),
             "volume_24h": float(event.get("volume24hr") or 0),
             "markets": markets_info,
         })

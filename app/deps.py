@@ -16,10 +16,11 @@ async def get_current_user(
 ) -> User:
     try:
         payload = jwt.decode(cred.credentials, get_settings().jwt_secret, algorithms=[get_settings().jwt_algorithm])
-        uid: int = payload.get("sub")
-        if uid is None:
+        uid_raw = payload.get("sub")
+        if uid_raw is None:
             raise HTTPException(status_code=401, detail="无效 token")
-    except JWTError:
+        uid = int(uid_raw)
+    except (JWTError, ValueError):
         raise HTTPException(status_code=401, detail="无效 token")
 
     result = await db.execute(select(User).where(User.id == uid))

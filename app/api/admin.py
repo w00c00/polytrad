@@ -1,13 +1,16 @@
 import os
 import signal
 from fastapi import APIRouter, Depends, HTTPException
+from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models import User, AIConfig
 from app.deps import get_admin
-from app.schemas import UserResp, AdminActionResp, AIConfigReq, AIConfigResp
+from app.schemas import UserResp, AdminActionResp, AIConfigReq, AIConfigResp, ChangePasswordReq
 from app.crypto import encrypt_secret
+
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter(prefix="/api/admin", tags=["管理员"])
 
@@ -54,6 +57,17 @@ async def delete_user(uid: int, db: AsyncSession = Depends(get_db), admin: User 
     await db.delete(user)
     await db.commit()
     return AdminActionResp(success=True, message=f"已删除: {user.username}")
+
+
+@router.post("/users/{uid}/change-password", response_model=AdminActionResp)
+async def admin_change_password(uid: int, req: ChangePasswordReq, db: AsyncSession = Depends(get_db), _: User = Depends(get_admin)):
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "用户不存在")
+    user.password_hash = pwd_ctx.hash(req.new_password)
+    await db.commit()
+    return AdminActionResp(success=True, message=f"已修改密码: {user.username}")
 
 
 @router.post("/restart", response_model=AdminActionResp)

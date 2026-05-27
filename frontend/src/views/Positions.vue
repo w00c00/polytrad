@@ -12,6 +12,9 @@
       </el-descriptions>
       <el-table :data="positions" size="small" v-loading="loading" style="margin-top:16px">
         <el-table-column prop="title" label="市场" show-overflow-tooltip />
+        <el-table-column label="到期 (北京)" width="120">
+          <template #default="{ row }">{{ row.endDate_bj || row.endDateIso_bj || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="size" label="数量" width="100" />
         <el-table-column label="当前价值" width="120">
           <template #default="{ row }">${{ parseFloat(row.currentValue || 0).toFixed(2) }}</template>

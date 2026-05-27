@@ -12,12 +12,16 @@
         </div>
       </template>
 
-      <el-table :data="results" size="small" v-loading="loading">
-        <el-table-column prop="title" label="市场" show-overflow-tooltip />
+      <el-table :data="results" size="small" v-loading="loading" @row-click="selectRow" highlight-current-row>
+        <el-table-column label="市场" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.title_zh || row.title }}</template>
+        </el-table-column>
         <el-table-column label="24h成交量" width="120">
           <template #default="{ row }">${{ (row.volume_24h || 0).toLocaleString() }}</template>
         </el-table-column>
-        <el-table-column prop="end_date" label="到期时间" width="180" />
+        <el-table-column label="到期时间 (北京)" width="140">
+          <template #default="{ row }">{{ row.end_date_bj || row.end_date || '-' }}</template>
+        </el-table-column>
         <el-table-column label="市场数" width="80">
           <template #default="{ row }">{{ row.markets?.length || 0 }}</template>
         </el-table-column>
@@ -27,6 +31,22 @@
           </template>
         </el-table-column>
       </el-table>
+    </el-card>
+
+    <el-card style="margin-top:16px">
+      <template #header>AI 预测</template>
+      <el-row :gutter="12" align="middle">
+        <el-col :span="8">
+          <el-select v-model="aiConfigId" placeholder="选择AI模型" size="small" style="width:100%">
+            <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-col>
+        <el-col :span="8">
+          <el-button size="small" type="primary" @click="runPredict" :loading="predicting" :disabled="!selectedEvent || !aiConfigId" style="width:100%">AI 概率预测</el-button>
+        </el-col>
+      </el-row>
+      <div v-if="prediction" style="margin-top:12px;white-space:pre-wrap;font-size:13px">{{ prediction }}</div>
+      <div v-if="!selectedEvent" style="margin-top:8px;color:#999;font-size:12px">请先点击表格行选择一个市场</div>
     </el-card>
 
     <el-dialog v-model="showDetail" title="市场详情" width="600">
@@ -49,8 +69,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { hotApi } from '../api'
+import { ref, onMounted } from 'vue'
+import { hotApi, aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
@@ -58,6 +78,11 @@ const hours = ref(24)
 const results = ref<any[]>([])
 const showDetail = ref(false)
 const detailMarkets = ref<any[]>([])
+const selectedEvent = ref<any>(null)
+const aiProviders = ref<any[]>([])
+const aiConfigId = ref<number | null>(null)
+const predicting = ref(false)
+const prediction = ref('')
 
 async function scan() {
   loading.value = true
@@ -68,9 +93,16 @@ async function scan() {
   } catch {} finally { loading.value = false }
 }
 
+function selectRow(row: any) {
+  selectedEvent.value = row
+  prediction.value = ''
+}
+
 function expandMarket(row: any) {
   detailMarkets.value = row.markets || []
   showDetail.value = true
+  selectedEvent.value = row
+  prediction.value = ''
 }
 
 async function quickBuy(row: any) {
@@ -88,4 +120,18 @@ async function quickBuy(row: any) {
     ElMessage.success('下单成功')
   } catch {}
 }
+
+async function runPredict() {
+  if (!selectedEvent.value || !aiConfigId.value) return
+  predicting.value = true
+  prediction.value = ''
+  try {
+    const { data } = await aiApi.analyzeMarket({ ai_config_id: aiConfigId.value, market_slug: selectedEvent.value.event_slug, question: '分析这个即将到期的热门市场，各结果的胜率如何，当前价格是否合理，给出交易建议。' })
+    prediction.value = data.analysis
+  } catch {} finally { predicting.value = false }
+}
+
+onMounted(() => {
+  aiApi.providers().then(({ data }) => { aiProviders.value = data }).catch(() => {})
+})
 </script>

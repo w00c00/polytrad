@@ -32,6 +32,7 @@ export const authApi = {
   register: (data: { username: string; password: string }) => api.post('/auth/register', data),
   login: (data: { username: string; password: string }) => api.post('/auth/login', data),
   me: () => api.get('/auth/me'),
+  changePassword: (data: { old_password: string; new_password: string }) => api.post('/auth/change-password', data),
 }
 
 // Admin
@@ -40,6 +41,7 @@ export const adminApi = {
   approve: (id: number) => api.post(`/admin/users/${id}/approve`),
   reject: (id: number) => api.post(`/admin/users/${id}/reject`),
   deleteUser: (id: number) => api.delete(`/admin/users/${id}`),
+  changePassword: (id: number, data: { new_password: string }) => api.post(`/admin/users/${id}/change-password`, data),
   restart: () => api.post('/admin/restart'),
   getAIConfigs: () => api.get('/admin/ai-configs'),
   createAIConfig: (data: any) => api.post('/admin/ai-configs', data),
@@ -53,6 +55,7 @@ export const walletApi = {
   list: () => api.get('/wallet/list'),
   deactivate: (id: number) => api.post(`/wallet/${id}/deactivate`),
   activate: (id: number) => api.post(`/wallet/${id}/activate`),
+  delete: (id: number) => api.delete(`/wallet/${id}`),
 }
 
 // BTC

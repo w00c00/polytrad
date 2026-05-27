@@ -5,23 +5,24 @@ from app.db import get_db
 from app.models import User
 from app.deps import get_current_user
 from app.schemas import OrderReq, MarketOrderReq, SellReq, CancelOrderReq
-from app.services.polymarket import gamma_api, clob_api, data_api
+from app.services.polymarket import gamma_api, clob_api, to_beijing_time
 from app.services.trading import place_limit_order, place_market_order, cancel_order, get_open_orders, cancel_all_orders
+from app.services.scanner import scan_btc_short_markets
 
 router = APIRouter(prefix="/api/btc", tags=["BTC短周期"])
 
 
 @router.get("/markets")
 async def list_btc_markets(user: User = Depends(get_current_user)):
-    """搜索 BTC 相关市场"""
-    events = await gamma_api.search("bitcoin BTC")
-    # 也搜索 slug 中含 btc/bitcoin 的活跃市场
+    """搜索 BTC 相关市场（含短周期 5m/15m）"""
+    short_markets = await scan_btc_short_markets(None)
+
     markets = await gamma_api.get_markets(active=True, closed=False, limit=100)
     btc_markets = [
         m for m in markets
         if any(kw in (m.get("question", "") + m.get("slug", "")).lower() for kw in ["btc", "bitcoin"])
     ]
-    return {"events": events, "markets": btc_markets}
+    return {"short_markets": short_markets, "markets": btc_markets}
 
 
 @router.get("/market/{slug}")
@@ -29,7 +30,15 @@ async def get_btc_market(slug: str, user: User = Depends(get_current_user)):
     """获取单个 BTC 市场详情 + 订单簿"""
     market = await gamma_api.get_market_by_slug(slug)
     if not market:
-        raise HTTPException(404, "市场不存在")
+        # 可能是 event slug，尝试从 event 获取
+        event = await gamma_api.get_event(slug)
+        if not event:
+            raise HTTPException(404, "市场不存在")
+        # 取 event 的第一个 market
+        markets = event.get("markets", [])
+        if not markets:
+            raise HTTPException(404, "市场不存在")
+        market = markets[0]
 
     token_ids = market.get("clobTokenIds", [])
     if isinstance(token_ids, str):
@@ -111,8 +120,17 @@ async def btc_positions(user: User = Depends(get_current_user), db: AsyncSession
     if not cred:
         raise HTTPException(400, "未配置钱包")
 
-    positions = await data_api.get_positions(cred.wallet_address)
-    value = await data_api.get_value(cred.wallet_address)
+    # 使用 funder 地址查询持仓（与上个项目一致，signature_type=3 时持仓归在 funder 下）
+    addr = cred.funder_address or cred.wallet_address
+    positions = await data_api.get_positions(addr)
+    value = await data_api.get_value(addr)
+
+    # 转换时间字段为北京时间
+    for p in positions:
+        for key in ["createdAt", "updatedAt", "startDate", "endDate", "endDateIso"]:
+            if key in p and p[key]:
+                p[f"{key}_bj"] = to_beijing_time(str(p[key]))
+
     return {"positions": positions, "portfolio_value": value}
 
 
@@ -141,4 +159,7 @@ async def btc_cancel_all(user: User = Depends(get_current_user), db: AsyncSessio
     try:
         return await cancel_all_orders(user, db)
     except Exception as e:
-        raise HTTPException(400, f"撤单失败: {e}")
+        raise HTTPException(400, f"撤销失败: {e}")
+
+
+from app.services.polymarket import data_api

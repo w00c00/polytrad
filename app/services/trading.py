@@ -14,25 +14,23 @@ _OrderArgs = None
 _OrderType = None
 _MarketOrderArgs = None
 _PartialCreateOrderOptions = None
-_BUY = None
-_SELL = None
+_Side = None
 
 
 def _load_clob_libs():
-    global _ClobClient, _ApiCreds, _OrderArgs, _OrderType, _MarketOrderArgs, _PartialCreateOrderOptions, _BUY, _SELL
+    global _ClobClient, _ApiCreds, _OrderArgs, _OrderType, _MarketOrderArgs, _PartialCreateOrderOptions, _Side
     if _ClobClient is not None:
         return
     from py_clob_client_v2.client import ClobClient
     from py_clob_client_v2.clob_types import ApiCreds, OrderArgs, OrderType, MarketOrderArgs, PartialCreateOrderOptions
-    from py_clob_client_v2.order_builder.constants import BUY, SELL
+    from py_clob_client_v2 import Side
     _ClobClient = ClobClient
     _ApiCreds = ApiCreds
     _OrderArgs = OrderArgs
     _OrderType = OrderType
     _MarketOrderArgs = MarketOrderArgs
     _PartialCreateOrderOptions = PartialCreateOrderOptions
-    _BUY = BUY
-    _SELL = SELL
+    _Side = Side
 
 
 async def get_clob_client(user: User, db: AsyncSession):
@@ -50,33 +48,39 @@ async def get_clob_client(user: User, db: AsyncSession):
     api_secret = decrypt_secret(cred.encrypted_api_secret)
     api_passphrase = decrypt_secret(cred.encrypted_api_passphrase)
 
-    return _ClobClient(
-        host=get_settings().polymarket_clob_host,
-        chain_id=cred.chain_id,
-        key=private_key,
-        creds=_ApiCreds(
+    kwargs = {
+        "host": get_settings().polymarket_clob_host,
+        "chain_id": cred.chain_id,
+        "key": private_key,
+        "creds": _ApiCreds(
             api_key=api_key,
             api_secret=api_secret,
             api_passphrase=api_passphrase,
         ),
-        signature_type=2 if cred.funder_address else 0,
-        funder=cred.funder_address,
-    )
+        "retry_on_error": True,
+    }
+    if cred.funder_address:
+        kwargs["signature_type"] = 3
+        kwargs["funder"] = cred.funder_address
+    return _ClobClient(**kwargs)
 
 
-async def setup_wallet(private_key: str, chain_id: int = 137) -> dict:
-    """从私钥生成 API 三件套 (首次配置)"""
+async def setup_wallet(private_key: str, chain_id: int = 137, funder_address: str = "") -> dict:
+    """从私钥派生 API 三件套 (首次配置)"""
     _load_clob_libs()
-    client = _ClobClient(
-        host=get_settings().polymarket_clob_host,
-        chain_id=chain_id,
-        key=private_key,
-    )
-    creds = client.create_or_derive_api_key()
-    # 从私钥推导地址 (eth_account 是 py-clob-client-v2 的依赖)
     from eth_account import Account
     account = Account.from_key(private_key)
     address = account.address
+
+    # 用私钥派生 API 凭证，不带 funder/signature_type（与上个项目一致）
+    temp_client = _ClobClient(
+        host=get_settings().polymarket_clob_host,
+        chain_id=chain_id,
+        key=private_key,
+        retry_on_error=True,
+    )
+    creds = temp_client.derive_api_key()
+
     return {
         "wallet_address": address,
         "api_key": creds.api_key,
@@ -95,7 +99,7 @@ async def place_limit_order(
     """下限价单"""
     client = await get_clob_client(user, db)
 
-    side_const = _BUY if side == "BUY" else _SELL
+    side_const = _Side.BUY if side == "BUY" else _Side.SELL
     otype = getattr(_OrderType, order_type, _OrderType.GTC)
 
     order_args = _OrderArgs(
@@ -104,7 +108,7 @@ async def place_limit_order(
         size=size,
         side=side_const,
     )
-    options = _PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk)
+    options = _PartialCreateOrderOptions(tick_size=tick_size)
 
     resp = client.create_and_post_order(order_args, options=options, order_type=otype)
 
@@ -135,7 +139,7 @@ async def place_market_order(
     """下市价单 (按美元金额)"""
     client = await get_clob_client(user, db)
 
-    side_const = _BUY if side == "BUY" else _SELL
+    side_const = _Side.BUY if side == "BUY" else _Side.SELL
     otype = getattr(_OrderType, order_type, _OrderType.FOK)
 
     order = _MarketOrderArgs(
@@ -168,15 +172,14 @@ async def place_market_order(
 async def cancel_order(user: User, db: AsyncSession, order_id: str) -> dict:
     """撤单"""
     client = await get_clob_client(user, db)
-    resp = client.cancel(order_id)
+    resp = client.cancel_order(order_id)
     return {"cancelled": True, "response": resp}
 
 
 async def get_open_orders(user: User, db: AsyncSession) -> list:
     """获取当前挂单"""
     client = await get_clob_client(user, db)
-    from py_clob_client_v2.clob_types import OpenOrderParams
-    return client.get_orders(OpenOrderParams())
+    return client.get_open_orders()
 
 
 async def cancel_all_orders(user: User, db: AsyncSession) -> dict:

@@ -10,7 +10,12 @@
             </div>
           </template>
           <el-table :data="events" size="small" @row-click="selectEvent" highlight-current-row>
-            <el-table-column prop="title" label="赛事" show-overflow-tooltip />
+            <el-table-column label="赛事" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.title_zh || row.title }}</template>
+            </el-table-column>
+            <el-table-column label="截止时间 (北京)" width="140">
+              <template #default="{ row }">{{ row.end_date_bj || '-' }}</template>
+            </el-table-column>
             <el-table-column label="24h成交量" width="120">
               <template #default="{ row }">${{ (row.volume_24h || 0).toLocaleString() }}</template>
             </el-table-column>
@@ -21,9 +26,11 @@
         </el-card>
 
         <el-card v-if="selectedEvent" style="margin-top:16px">
-          <template #header>{{ selectedEvent.title }} - 市场</template>
+          <template #header>{{ selectedEvent.title_zh || selectedEvent.title }} - 市场</template>
           <el-table :data="selectedEvent.markets" size="small">
-            <el-table-column prop="question" label="结果" show-overflow-tooltip />
+            <el-table-column label="结果" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.question_zh || row.question }}</template>
+            </el-table-column>
             <el-table-column label="YES价格" width="100">
               <template #default="{ row }">${{ (row.yes_price || 0).toFixed(3) }}</template>
             </el-table-column>
@@ -86,7 +93,7 @@ const selectedEvent = ref<any>(null)
 const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const prediction = ref('')
-const form = reactive({ side: 'BUY', amount: 10, tokenId: '' })
+const form = reactive({ side: 'BUY', amount: 10, tokenId: '', price: 0.5 })
 
 async function loadEvents() {
   loading.value = true
@@ -105,15 +112,20 @@ function quickBuy(row: any) {
   if (row.token_ids?.length > 0) {
     form.tokenId = row.token_ids[0]
     form.side = 'BUY'
+    form.price = row.yes_price || 0.5
+    ElMessage.success(`已选择: ${row.question_zh || row.question}`)
   }
 }
 
 async function placeOrder() {
-  if (!form.tokenId) { ElMessage.warning('请先选择市场'); return }
+  if (!form.tokenId) { ElMessage.warning('请先点击买YES选择市场'); return }
   ordering.value = true
   try {
-    await sportsApi.order({ token_id: form.tokenId, price: 0.5, size: form.amount, side: form.side, order_type: 'FOK' })
-    ElMessage.success('下单成功')
+    // amount 是 USDC 金额，转换为 shares: shares = amount / price
+    const price = form.price || 0.5
+    const size = Math.floor(form.amount / price)
+    await sportsApi.order({ token_id: form.tokenId, price, size, side: form.side, order_type: 'FOK' })
+    ElMessage.success(`下单成功: ${size} shares @ $${price.toFixed(3)}`)
   } catch {} finally { ordering.value = false }
 }
 

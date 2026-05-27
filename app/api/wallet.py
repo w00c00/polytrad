@@ -21,7 +21,7 @@ async def configure_wallet(req: WalletSetupReq, user: User = Depends(get_current
         raise HTTPException(400, "已有活跃钱包配置，请先停用后再新建")
 
     try:
-        wallet_info = await setup_wallet(req.private_key, req.chain_id)
+        wallet_info = await setup_wallet(req.private_key, req.chain_id, req.funder_address or "")
     except Exception as e:
         raise HTTPException(400, f"钱包初始化失败: {e}")
 
@@ -61,6 +61,19 @@ async def deactivate_wallet(cid: int, user: User = Depends(get_current_user), db
     cred.is_active = False
     await db.commit()
     await db.refresh(cred)
+    return cred
+
+
+@router.delete("/{cid}", response_model=WalletResp)
+async def delete_wallet(cid: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Credential).where(Credential.id == cid, Credential.user_id == user.id)
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        raise HTTPException(404, "钱包不存在")
+    await db.delete(cred)
+    await db.commit()
     return cred
 
 
