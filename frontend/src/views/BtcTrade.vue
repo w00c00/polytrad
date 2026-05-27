@@ -7,7 +7,9 @@
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>BTC 短周期市场</span>
               <div>
-                <el-input v-model="searchSlug" placeholder="输入市场 slug" size="small" style="width:300px;margin-right:8px" @keyup.enter="loadMarket" />
+                <el-tooltip content="slug 来自 Polymarket URL，例如 polymarket.com/event/btc-above-100k 中的 btc-above-100k" placement="top">
+                  <el-input v-model="searchSlug" placeholder="输入市场 slug（从 Polymarket URL 获取）" size="small" style="width:300px;margin-right:8px" @keyup.enter="loadMarket" />
+                </el-tooltip>
                 <el-button size="small" type="primary" @click="loadMarket">加载</el-button>
                 <el-button size="small" @click="loadBTCMarkets" :loading="loadingMarkets">刷新市场</el-button>
               </div>
@@ -170,7 +172,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { btcApi, aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -380,6 +382,10 @@ async function loadPortfolio() {
     }
   } catch {} finally { loadingPortfolio.value = false }
 }
+
+watch(aiProviders, (list) => {
+  if (list.length === 1 && !aiConfigId.value) aiConfigId.value = list[0].id
+})
 
 onMounted(() => {
   loadOrders()

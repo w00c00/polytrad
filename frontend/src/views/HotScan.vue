@@ -50,6 +50,11 @@
     </el-card>
 
     <el-dialog v-model="showDetail" title="市场详情" width="600">
+      <el-form inline size="small" style="margin-bottom:12px">
+        <el-form-item label="下单金额 ($)">
+          <el-input-number v-model="orderAmount" :min="1" :step="1" style="width:120px" />
+        </el-form-item>
+      </el-form>
       <el-table :data="detailMarkets" size="small">
         <el-table-column prop="question" label="结果" show-overflow-tooltip />
         <el-table-column label="YES" width="80">
@@ -69,7 +74,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { hotApi, aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -83,6 +88,7 @@ const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const predicting = ref(false)
 const prediction = ref('')
+const orderAmount = ref(10)
 
 async function scan() {
   loading.value = true
@@ -107,17 +113,19 @@ function expandMarket(row: any) {
 
 async function quickBuy(row: any) {
   if (!row.token_ids?.length) return
+  const price = row.yes_price || 0.5
+  const size = Math.floor(orderAmount.value / price)
   try {
     await hotApi.order({
       token_id: row.token_ids[0],
-      price: row.yes_price,
-      size: 10,
+      price,
+      size,
       side: 'BUY',
       order_type: 'GTC',
       tick_size: row.tick_size || '0.01',
       neg_risk: row.neg_risk || false,
     })
-    ElMessage.success('下单成功')
+    ElMessage.success(`下单成功: ${size} shares @ $${price.toFixed(3)}`)
   } catch {}
 }
 
@@ -130,6 +138,10 @@ async function runPredict() {
     prediction.value = data.analysis
   } catch {} finally { predicting.value = false }
 }
+
+watch(aiProviders, (list) => {
+  if (list.length === 1 && !aiConfigId.value) aiConfigId.value = list[0].id
+})
 
 onMounted(() => {
   aiApi.providers().then(({ data }) => { aiProviders.value = data }).catch(() => {})

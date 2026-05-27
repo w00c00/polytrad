@@ -81,7 +81,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import { sportsApi, aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -137,6 +137,10 @@ async function runPredict() {
     prediction.value = data.analysis
   } catch {} finally { predicting.value = false }
 }
+
+watch(aiProviders, (list) => {
+  if (list.length === 1 && !aiConfigId.value) aiConfigId.value = list[0].id
+})
 
 onMounted(async () => {
   loadEvents()
