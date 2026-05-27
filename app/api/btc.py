@@ -6,7 +6,7 @@ from app.models import User
 from app.deps import get_current_user
 from app.schemas import OrderReq, MarketOrderReq, SellReq, CancelOrderReq
 from app.services.polymarket import gamma_api, clob_api, to_beijing_time
-from app.services.trading import place_limit_order, place_market_order, cancel_order, get_open_orders, cancel_all_orders
+from app.services.trading import place_limit_order, place_market_order, cancel_order, get_open_orders, cancel_all_orders, get_usdc_balance
 from app.services.scanner import scan_btc_short_markets
 
 router = APIRouter(prefix="/api/btc", tags=["BTC短周期"])
@@ -123,7 +123,20 @@ async def btc_positions(user: User = Depends(get_current_user), db: AsyncSession
     # 使用 funder 地址查询持仓（与上个项目一致，signature_type=3 时持仓归在 funder 下）
     addr = cred.funder_address or cred.wallet_address
     positions = await data_api.get_positions(addr)
-    value = await data_api.get_value(addr)
+
+    # 过滤已结算/已赎回的持仓
+    def _float_or_zero(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    positions = [
+        p for p in positions
+        if _float_or_zero(p.get("size")) > 0.000001
+        and not p.get("redeemable")
+        and not p.get("redeemed")
+    ]
 
     # 转换时间字段为北京时间
     for p in positions:
@@ -131,7 +144,13 @@ async def btc_positions(user: User = Depends(get_current_user), db: AsyncSession
             if key in p and p[key]:
                 p[f"{key}_bj"] = to_beijing_time(str(p[key]))
 
-    return {"positions": positions, "portfolio_value": value}
+    # 获取 USDC 余额
+    try:
+        balance = await get_usdc_balance(user, db)
+    except Exception:
+        balance = {}
+
+    return {"positions": positions, "balance": balance}
 
 
 @router.get("/orders")

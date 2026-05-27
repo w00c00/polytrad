@@ -15,14 +15,16 @@ _OrderType = None
 _MarketOrderArgs = None
 _PartialCreateOrderOptions = None
 _Side = None
+_BalanceAllowanceParams = None
+_AssetType = None
 
 
 def _load_clob_libs():
-    global _ClobClient, _ApiCreds, _OrderArgs, _OrderType, _MarketOrderArgs, _PartialCreateOrderOptions, _Side
+    global _ClobClient, _ApiCreds, _OrderArgs, _OrderType, _MarketOrderArgs, _PartialCreateOrderOptions, _Side, _BalanceAllowanceParams, _AssetType
     if _ClobClient is not None:
         return
     from py_clob_client_v2.client import ClobClient
-    from py_clob_client_v2.clob_types import ApiCreds, OrderArgs, OrderType, MarketOrderArgs, PartialCreateOrderOptions
+    from py_clob_client_v2.clob_types import ApiCreds, OrderArgs, OrderType, MarketOrderArgs, PartialCreateOrderOptions, BalanceAllowanceParams, AssetType
     from py_clob_client_v2 import Side
     _ClobClient = ClobClient
     _ApiCreds = ApiCreds
@@ -31,6 +33,8 @@ def _load_clob_libs():
     _MarketOrderArgs = MarketOrderArgs
     _PartialCreateOrderOptions = PartialCreateOrderOptions
     _Side = Side
+    _BalanceAllowanceParams = BalanceAllowanceParams
+    _AssetType = AssetType
 
 
 async def get_clob_client(user: User, db: AsyncSession):
@@ -187,3 +191,21 @@ async def cancel_all_orders(user: User, db: AsyncSession) -> dict:
     client = await get_clob_client(user, db)
     resp = client.cancel_all()
     return {"cancelled_all": True, "response": resp}
+
+
+async def get_usdc_balance(user: User, db: AsyncSession) -> dict:
+    """获取 USDC 余额（通过 CLOB get_balance_allowance）"""
+    _load_clob_libs()
+    client = await get_clob_client(user, db)
+    params = _BalanceAllowanceParams(asset_type=_AssetType.COLLATERAL)
+    raw = client.get_balance_allowance(params)
+    if not isinstance(raw, dict):
+        return {"raw": str(raw)}
+    result = {}
+    for key in ["balance", "allowance", "available", "available_balance"]:
+        if key in raw:
+            try:
+                result[key] = round(int(raw[key]) / 1_000_000, 6)
+            except (TypeError, ValueError):
+                result[key] = raw[key]
+    return result or raw

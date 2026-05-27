@@ -94,13 +94,18 @@
               <el-button size="small" @click="loadPortfolio" :loading="loadingPortfolio">刷新</el-button>
             </div>
           </template>
-          <div v-if="portfolioValue !== null" style="font-size:18px;font-weight:bold;margin-bottom:8px">${{ parseFloat(portfolioValue).toFixed(2) }}</div>
+          <div style="margin-bottom:12px">
+            <div style="font-size:12px;color:#999">USDC 可用余额</div>
+            <div style="font-size:20px;font-weight:bold;color:#409eff">${{ usdcBalance }}</div>
+          </div>
+          <el-divider style="margin:8px 0" />
           <div v-if="positions.length > 0" style="font-size:12px;color:#666">
+            <div style="font-size:12px;color:#999;margin-bottom:4px">持仓 ({{ positions.length }}) · 总值 ${{ totalPositionValue }}</div>
             <div v-for="p in positions.slice(0, 5)" :key="p.asset" style="display:flex;justify-content:space-between;padding:2px 0">
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">{{ p.title }}</span>
-              <span>${{ parseFloat(p.currentValue || 0).toFixed(2) }}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">{{ p.title }}</span>
+              <span :style="{ color: parseFloat(p.cashPnl || 0) >= 0 ? '#67c23a' : '#f56c6c' }">${{ parseFloat(p.currentValue || 0).toFixed(2) }}</span>
             </div>
-            <div v-if="positions.length > 5" style="color:#999;margin-top:4px">共 {{ positions.length }} 个持仓</div>
+            <div v-if="positions.length > 5" style="color:#999;margin-top:4px">还有 {{ positions.length - 5 }} 个持仓</div>
           </div>
           <div v-else style="color:#999;font-size:12px">暂无持仓</div>
         </el-card>
@@ -190,8 +195,13 @@ const aiConfigId = ref<number | null>(null)
 const predicting = ref(false)
 const prediction = ref('')
 const portfolioValue = ref<string | null>(null)
+const usdcBalance = ref('--')
 const positions = ref<any[]>([])
 const loadingPortfolio = ref(false)
+
+const totalPositionValue = computed(() => {
+  return positions.value.reduce((sum, p) => sum + parseFloat(p.currentValue || 0), 0).toFixed(2)
+})
 
 const orderForm = reactive({
   side: 'BUY',
@@ -361,8 +371,13 @@ async function loadPortfolio() {
   try {
     const { data } = await btcApi.positions()
     positions.value = data.positions || []
-    const pv = data.portfolio_value
-    portfolioValue.value = Array.isArray(pv) ? (pv[0]?.value ?? null) : (pv?.value ?? null)
+    const bal = data.balance
+    if (bal && typeof bal === 'object') {
+      const raw = bal.balance ?? bal.available ?? bal.available_balance ?? null
+      usdcBalance.value = raw !== null ? Number(raw).toFixed(2) : '--'
+    } else {
+      usdcBalance.value = '--'
+    }
   } catch {} finally { loadingPortfolio.value = false }
 }
 
