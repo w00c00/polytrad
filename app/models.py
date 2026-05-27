@@ -67,7 +67,7 @@ class Trade(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     market_slug: Mapped[str] = mapped_column(String(200), nullable=False)
-    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False, default="")
     token_id: Mapped[str] = mapped_column(String(100), nullable=False)
     side: Mapped[str] = mapped_column(String(4), nullable=False)  # BUY/SELL
     order_type: Mapped[str] = mapped_column(String(10), default="GTC")

@@ -13,16 +13,16 @@
     <el-row :gutter="20" style="margin-top:20px">
       <el-col :span="12">
         <el-card>
-          <template #header>最近交易</template>
-          <el-table :data="trades" size="small" max-height="300">
-            <el-table-column prop="market_slug" label="市场" show-overflow-tooltip />
+          <template #header>当前挂单</template>
+          <div v-if="trades.length === 0" style="text-align:center;color:#999;padding:40px">暂无挂单</div>
+          <el-table v-else :data="trades" size="small" max-height="300">
             <el-table-column prop="side" label="方向" width="60">
               <template #default="{ row }">
                 <el-tag :type="row.side === 'BUY' ? 'success' : 'danger'" size="small">{{ row.side }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="price" label="价格" width="70" />
-            <el-table-column prop="size" label="数量" width="70" />
+            <el-table-column prop="original_size" label="数量" width="70" />
             <el-table-column prop="status" label="状态" width="80" />
           </el-table>
         </el-card>
@@ -63,7 +63,11 @@ const cards = [
 onMounted(async () => {
   try {
     const { data } = await btcApi.positions()
-    positions.value = data.positions || []
+    positions.value = (data.positions || []).slice(0, 10)
+  } catch {}
+  try {
+    const { data } = await btcApi.orders()
+    trades.value = (data.orders || []).slice(0, 10)
   } catch {}
 })
 </script>

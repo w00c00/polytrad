@@ -72,8 +72,8 @@ async def admin_change_password(uid: int, req: ChangePasswordReq, db: AsyncSessi
 
 @router.post("/restart", response_model=AdminActionResp)
 async def restart_service(_: User = Depends(get_admin)):
-    os.kill(os.getpid(), signal.SIGHUP)
-    return AdminActionResp(success=True, message="服务重启信号已发送")
+    os.kill(os.getpid(), signal.SIGTERM)
+    return AdminActionResp(success=True, message="服务重启中...")
 
 
 # === AI 配置管理 ===

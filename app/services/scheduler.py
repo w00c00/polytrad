@@ -63,9 +63,17 @@ async def job_position_report():
             if not cred:
                 continue
             try:
-                positions = await data_api.get_positions(cred.wallet_address)
-                value = await data_api.get_value(cred.wallet_address)
-                total = float(value.get("value", 0))
+                addr = cred.funder_address or cred.wallet_address
+                positions = await data_api.get_positions(addr)
+                # 过滤已结算持仓
+                positions = [p for p in positions if float(p.get("size", 0)) > 0.000001 and not p.get("redeemable") and not p.get("redeemed")]
+                value = await data_api.get_value(addr)
+                # value 是数组格式 [{value: 0.5}]
+                total = 0.0
+                if isinstance(value, list) and value:
+                    total = float(value[0].get("value", 0))
+                elif isinstance(value, dict):
+                    total = float(value.get("value", 0))
                 title = f"持仓报告 - 总价值: ${total:,.2f}"
                 body_lines = []
                 for p in positions[:10]:
@@ -74,6 +82,17 @@ async def job_position_report():
                 await notify_user(db, user, title, body)
             except Exception as e:
                 logger.error(f"持仓报告推送失败 user={user.id}: {e}")
+
+
+async def job_cleanup_scan_results():
+    """清理 7 天前的扫描结果"""
+    async with SessionLocal() as db:
+        from datetime import datetime, timezone, timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        from sqlalchemy import delete
+        await db.execute(delete(ScanResult).where(ScanResult.created_at < cutoff))
+        await db.commit()
+        logger.info("已清理过期扫描结果")
 
 
 def start_scheduler():
@@ -86,6 +105,8 @@ def start_scheduler():
     scheduler.add_job(job_arbitrage_scan, "interval", hours=1, id="arbitrage_scan", replace_existing=True)
     # 每天 UTC 0 点推送持仓报告
     scheduler.add_job(job_position_report, "cron", hour=0, id="position_report", replace_existing=True)
+    # 每天清理 7 天前的扫描结果
+    scheduler.add_job(job_cleanup_scan_results, "cron", hour=3, id="cleanup_scan", replace_existing=True)
     scheduler.start()
     logger.info("定时任务已启动")
 

@@ -56,7 +56,7 @@ async def arbitrage_execute(
             user, db,
             token_id=token_id, price=price, size=size,
             side=side, order_type="GTC",
-            tick_size=tick_size, neg_risk=neg_risk,
+            tick_size=tick_size,
         )
     except Exception as e:
         raise HTTPException(400, f"套利下单失败: {e}")

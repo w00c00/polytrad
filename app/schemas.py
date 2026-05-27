@@ -38,6 +38,7 @@ class WalletSetupReq(BaseModel):
 class WalletResp(BaseModel):
     id: int
     wallet_address: str
+    funder_address: str | None = None
     chain_id: int
     is_active: bool
     created_at: datetime

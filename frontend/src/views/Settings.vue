@@ -24,8 +24,14 @@
             <el-form-item label="私钥 (MetaMask)">
               <el-input v-model="walletForm.private_key" type="password" show-password placeholder="0x..." />
             </el-form-item>
-            <el-form-item label="Funder 地址">
-              <el-input v-model="walletForm.funder_address" placeholder="0x..." />
+            <el-form-item>
+              <template #label>
+                <span>Funder 地址</span>
+                <el-tooltip content="MetaMask 充值钱包地址，即你在 Polymarket 网站上充值 USDC 的那个钱包地址。如果留空则使用私钥对应的地址。" placement="top">
+                  <el-icon style="margin-left:4px;cursor:pointer"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </template>
+              <el-input v-model="walletForm.funder_address" placeholder="MetaMask 充值地址 (0x...)" />
             </el-form-item>
             <el-form-item label="链 ID">
               <el-radio-group v-model="walletForm.chain_id">

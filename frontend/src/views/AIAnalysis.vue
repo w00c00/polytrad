@@ -11,7 +11,9 @@
               </el-select>
             </el-form-item>
             <el-form-item label="市场 Slug">
-              <el-input v-model="form.market_slug" placeholder="输入 polymarket 市场 slug" />
+              <el-tooltip content="slug 来自 Polymarket URL，例如 polymarket.com/event/btc-above-100k 中的 btc-above-100k" placement="top">
+                <el-input v-model="form.market_slug" placeholder="从 Polymarket URL 获取，如 btc-above-100k" />
+              </el-tooltip>
             </el-form-item>
             <el-form-item label="分析问题">
               <el-input v-model="form.question" type="textarea" :rows="2" placeholder="想问 AI 什么?" />
@@ -45,7 +47,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import { aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -74,11 +76,15 @@ async function customAnalyze() {
   } catch {} finally { customAnalyzing.value = false }
 }
 
+watch(providers, (list) => {
+  if (list.length === 1 && !form.ai_config_id) form.ai_config_id = list[0].id
+})
+
 onMounted(async () => {
   try {
     const { data } = await aiApi.providers()
     providers.value = data
-    if (data.length > 0) form.ai_config_id = data[0].id
+    if (data.length === 1) form.ai_config_id = data[0].id
   } catch {}
 })
 </script>

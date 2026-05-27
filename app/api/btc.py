@@ -69,7 +69,6 @@ async def btc_place_order(req: OrderReq, user: User = Depends(get_current_user),
             side=req.side,
             order_type=req.order_type,
             tick_size=req.tick_size,
-            neg_risk=req.neg_risk,
         )
         return result
     except Exception as e:

@@ -44,36 +44,39 @@ def _extract_market_info(event: dict) -> list[dict]:
 
 async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
     """扫描 BTC 短周期市场 (5m/15m)，通过时间戳直接查当前周期"""
-    results = []
+    import asyncio
     now_ts = int(datetime.now(timezone.utc).timestamp())
 
+    # 构建所有需要查询的 slug
+    slugs = []
     for series_info in BTC_SHORT_SERIES:
         interval = series_info["interval"]
         prefix = series_info["prefix"]
-
-        # 当前周期结束时间戳（向下取整到 interval 边界）
         current_end = (now_ts // interval) * interval
-
-        # 查当前周期前后
         for offset in range(-1, 6):
             ts = current_end + offset * interval
-            slug = f"{prefix}-{ts}"
+            slugs.append((f"{prefix}-{ts}", series_info["label"]))
+
+    # 并发查询
+    async def fetch_one(slug, label):
+        try:
             event = await gamma_api.get_event(slug)
             if not event or not event.get("active"):
-                continue
-
-            start_time = event.get("startTime") or event.get("startDate")
-            end_time = event.get("endDate")
-
-            results.append({
+                return None
+            return {
                 "event_slug": event.get("slug", ""),
                 "title": event.get("title", ""),
-                "series_label": series_info["label"],
-                "start_time_bj": to_beijing_time(start_time),
-                "end_time_bj": to_beijing_time(end_time),
+                "series_label": label,
+                "start_time_bj": to_beijing_time(event.get("startTime") or event.get("startDate")),
+                "end_time_bj": to_beijing_time(event.get("endDate")),
                 "markets": _extract_market_info(event),
-            })
+            }
+        except Exception:
+            return None
 
+    tasks = [fetch_one(slug, label) for slug, label in slugs]
+    raw = await asyncio.gather(*tasks)
+    results = [r for r in raw if r is not None]
     results.sort(key=lambda x: x.get("start_time_bj", ""))
     return results
 
@@ -296,5 +299,10 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
             "volume_24h": float(event.get("volume24hr") or 0),
             "markets": markets_info,
         })
+
+    if db:
+        scan = ScanResult(scan_type="sports", market_data=json.dumps(results, ensure_ascii=False))
+        db.add(scan)
+        await db.commit()
 
     return results

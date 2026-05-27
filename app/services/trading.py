@@ -97,7 +97,7 @@ async def place_limit_order(
     user: User, db: AsyncSession,
     token_id: str, price: float, size: float,
     side: str, order_type: str = "GTC",
-    tick_size: str = "0.01", neg_risk: bool = False,
+    tick_size: str = "0.01",
     market_slug: str = "", condition_id: str = "",
 ) -> dict:
     """下限价单"""
