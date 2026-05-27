@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.env
+*.db
+*.db-wal
+*.db-shm
+frontend/node_modules/
+frontend/dist/
+.idea/
+.vscode/
+*.log
