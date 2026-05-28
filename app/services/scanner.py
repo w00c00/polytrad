@@ -53,22 +53,36 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
     """扫描 BTC 短周期市场 (5m/15m/4h/1h/1d)"""
     import asyncio
     now_ts = int(datetime.now(timezone.utc).timestamp())
+    now = datetime.now(timezone.utc)
 
-    # 1. timestamp 型 series: 直接构造 slug 查询
+    # 1. timestamp 型 series: 只查当前和未来的周期
     slugs = []
     for series_info in BTC_TIMESTAMP_SERIES:
         interval = series_info["interval"]
         prefix = series_info["prefix"]
         current_end = (now_ts // interval) * interval
-        for offset in range(-1, 6):
+        for offset in range(0, 6):
             ts = current_end + offset * interval
             slugs.append((f"{prefix}-{ts}", series_info["label"]))
 
     async def fetch_by_slug(slug, label):
         try:
             event = await gamma_api.get_event(slug)
-            if not event or not event.get("active"):
+            if not event:
                 return None
+            if event.get("closed") or not event.get("active"):
+                return None
+            # 过滤已过期
+            end_str = event.get("endDate") or ""
+            if end_str:
+                try:
+                    ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    if ed.tzinfo is None:
+                        ed = ed.replace(tzinfo=timezone.utc)
+                    if ed < now:
+                        return None
+                except (ValueError, TypeError):
+                    pass
             title = event.get("title", "")
             return {
                 "event_slug": event.get("slug", ""),
@@ -82,7 +96,7 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
         except Exception:
             return None
 
-    # 2. series 型: 通过 series 端点获取 events，再查完整 event 数据
+    # 2. series 型: 通过 series 端点获取 events，再查完整 event 数据，过滤已过期
     async def fetch_from_series(series_info):
         try:
             data = await gamma_api.get_series(series_info["slug"])
@@ -91,13 +105,25 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
             events = data.get("events", [])
             results = []
             for event in events:
-                if not event.get("active"):
+                if event.get("closed") or not event.get("active"):
                     continue
                 slug = event.get("slug", "")
-                # series 端点返回的 event 没有 markets，需要再查一次
                 full_event = await gamma_api.get_event(slug)
                 if not full_event:
                     continue
+                if full_event.get("closed") or not full_event.get("active"):
+                    continue
+                # 过滤已过期
+                end_str = full_event.get("endDate") or ""
+                if end_str:
+                    try:
+                        ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                        if ed.tzinfo is None:
+                            ed = ed.replace(tzinfo=timezone.utc)
+                        if ed < now:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 title = full_event.get("title", "")
                 results.append({
                     "event_slug": slug,

@@ -18,11 +18,11 @@
 
           <!-- BTC 短周期列表 -->
           <el-tabs v-model="activeTab" @tab-change="onTabChange">
-            <el-tab-pane label="5分钟" name="5m" />
             <el-tab-pane label="15分钟" name="15m" />
             <el-tab-pane label="1小时" name="1h" />
             <el-tab-pane label="4小时" name="4h" />
             <el-tab-pane label="1天" name="1d" />
+            <el-tab-pane label="5分钟" name="5m" />
             <el-tab-pane label="其他BTC" name="other" />
           </el-tabs>
 
