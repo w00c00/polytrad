@@ -18,8 +18,11 @@
 
           <!-- BTC 短周期列表 -->
           <el-tabs v-model="activeTab" @tab-change="onTabChange">
-            <el-tab-pane label="15分钟" name="15m" />
             <el-tab-pane label="5分钟" name="5m" />
+            <el-tab-pane label="15分钟" name="15m" />
+            <el-tab-pane label="1小时" name="1h" />
+            <el-tab-pane label="4小时" name="4h" />
+            <el-tab-pane label="1天" name="1d" />
             <el-tab-pane label="其他BTC" name="other" />
           </el-tabs>
 
@@ -245,8 +248,12 @@ const orderForm = reactive({
   amount: 10,
 })
 
+const tabLabelMap: Record<string, string> = {
+  '5m': '5分钟', '15m': '15分钟', '1h': '1小时', '4h': '4小时', '1d': '1天'
+}
 const filteredShortMarkets = computed(() => {
-  const label = activeTab.value === '15m' ? '15分钟' : '5分钟'
+  const label = tabLabelMap[activeTab.value]
+  if (!label) return []
   return shortMarkets.value.filter(m => m.series_label === label)
 })
 

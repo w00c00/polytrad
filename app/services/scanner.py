@@ -82,7 +82,7 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
         except Exception:
             return None
 
-    # 2. series 型: 通过 series 端点获取 events
+    # 2. series 型: 通过 series 端点获取 events，再查完整 event 数据
     async def fetch_from_series(series_info):
         try:
             data = await gamma_api.get_series(series_info["slug"])
@@ -93,15 +93,20 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
             for event in events:
                 if not event.get("active"):
                     continue
-                title = event.get("title", "")
+                slug = event.get("slug", "")
+                # series 端点返回的 event 没有 markets，需要再查一次
+                full_event = await gamma_api.get_event(slug)
+                if not full_event:
+                    continue
+                title = full_event.get("title", "")
                 results.append({
-                    "event_slug": event.get("slug", ""),
+                    "event_slug": slug,
                     "title": title,
                     "title_zh": translate_title(title),
                     "series_label": series_info["label"],
-                    "start_time_bj": to_beijing_time(event.get("startTime") or event.get("startDate")),
-                    "end_time_bj": to_beijing_time(event.get("endDate")),
-                    "markets": _extract_market_info(event),
+                    "start_time_bj": to_beijing_time(full_event.get("startTime") or full_event.get("startDate")),
+                    "end_time_bj": to_beijing_time(full_event.get("endDate")),
+                    "markets": _extract_market_info(full_event),
                 })
             return results
         except Exception:
