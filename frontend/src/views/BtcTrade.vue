@@ -138,8 +138,8 @@
               <el-input-number v-model="orderForm.amount" :min="1" style="width:100%" />
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" style="width:100%" :loading="ordering" @click="placeOrder">
-                {{ orderForm.side === 'BUY' ? '买入' : '卖出' }}
+              <el-button type="primary" style="width:100%" :loading="ordering || loadingBook" :disabled="loadingBook" @click="placeOrder">
+                {{ loadingBook ? '加载盘口...' : (orderForm.side === 'BUY' ? '买入' : '卖出') }}
               </el-button>
             </el-form-item>
           </el-form>
@@ -307,28 +307,51 @@ async function loadMarket() {
     const yesBook = data.orderbook?.YES
     bids.value = (yesBook?.bids || []).slice(0, 10)
     asks.value = (yesBook?.asks || []).slice(0, 10)
+    // 用实时盘口价覆盖
+    if (asks.value.length > 0) yesPrice.value = Math.min(...asks.value.map((a: any) => parseFloat(a.price)))
+    if (bids.value.length > 0) noPrice.value = Math.max(...bids.value.map((b: any) => parseFloat(b.price)))
   } catch {}
 }
 
-function selectShortMarket(row: any) {
+const loadingBook = ref(false)
+
+async function selectShortMarket(row: any) {
   const market = row.markets?.[0]
   if (!market) return
   selectedTokenId.value = market.token_ids?.[0] || ''
   selectedTickSize.value = market.tick_size || '0.01'
   selectedNegRisk.value = market.neg_risk || false
-  yesPrice.value = market.yes_price || 0.5
-  noPrice.value = market.no_price || 0.5
   currentMarket.value = { question: row.title_zh || row.title, volume: 0 }
   selectedSlug.value = row.event_slug || ''
   prediction.value = ''
+  bids.value = []
+  asks.value = []
 
-  // 加载订单簿
+  // 加载订单簿，用实时盘口价覆盖缓存价
   if (selectedTokenId.value) {
-    btcApi.market(row.event_slug).then(({ data }) => {
+    loadingBook.value = true
+    try {
+      const { data } = await btcApi.market(row.event_slug)
       const yesBook = data.orderbook?.YES
       bids.value = (yesBook?.bids || []).slice(0, 10)
       asks.value = (yesBook?.asks || []).slice(0, 10)
-    }).catch(() => {})
+      // 用实时盘口价更新价格
+      if (asks.value.length > 0) {
+        yesPrice.value = Math.min(...asks.value.map((a: any) => parseFloat(a.price)))
+      } else {
+        yesPrice.value = market.yes_price || 0.5
+      }
+      if (bids.value.length > 0) {
+        noPrice.value = Math.max(...bids.value.map((b: any) => parseFloat(b.price)))
+      } else {
+        noPrice.value = market.no_price || 0.5
+      }
+    } catch {
+      yesPrice.value = market.yes_price || 0.5
+      noPrice.value = market.no_price || 0.5
+    } finally {
+      loadingBook.value = false
+    }
   }
 }
 
@@ -378,7 +401,15 @@ async function placeOrder() {
   try {
     let price: number
     if (orderForm.type === 'market') {
-      // 市价单：用盘口价下 GTC 限价单（避免 FOK 流动性不足失败）
+      // 市价单：先确保有实时盘口价
+      if (asks.value.length === 0 && bids.value.length === 0 && selectedSlug.value) {
+        try {
+          const { data } = await btcApi.market(selectedSlug.value)
+          const yesBook = data.orderbook?.YES
+          bids.value = (yesBook?.bids || []).slice(0, 10)
+          asks.value = (yesBook?.asks || []).slice(0, 10)
+        } catch {}
+      }
       const bookPrice = orderForm.side === 'BUY'
         ? (asks.value.length > 0 ? Math.min(...asks.value.map((a: any) => parseFloat(a.price))) : yesPrice.value)
         : (bids.value.length > 0 ? Math.max(...bids.value.map((b: any) => parseFloat(b.price))) : noPrice.value)
