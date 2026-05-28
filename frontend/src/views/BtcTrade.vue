@@ -120,9 +120,9 @@
           <template #header>快速下单</template>
           <el-form label-position="top" size="small">
             <el-form-item label="方向">
-              <el-radio-group v-model="orderForm.side">
-                <el-radio-button value="BUY">UP (YES)</el-radio-button>
-                <el-radio-button value="SELL">DOWN (NO)</el-radio-button>
+              <el-radio-group v-model="orderForm.direction">
+                <el-radio-button value="UP">UP (YES)</el-radio-button>
+                <el-radio-button value="DOWN">DOWN (NO)</el-radio-button>
               </el-radio-group>
             </el-form-item>
             <el-form-item label="下单方式">
@@ -139,7 +139,7 @@
             </el-form-item>
             <el-form-item>
               <el-button type="primary" style="width:100%" :loading="ordering || loadingBook" :disabled="loadingBook" @click="placeOrder">
-                {{ loadingBook ? '加载盘口...' : (orderForm.side === 'BUY' ? '买入' : '卖出') }}
+                {{ loadingBook ? '加载盘口...' : '买入' }}
               </el-button>
             </el-form-item>
           </el-form>
@@ -219,6 +219,7 @@ const openOrders = ref<any[]>([])
 const ordering = ref(false)
 const loadingMarkets = ref(false)
 const selectedTokenId = ref('')
+const selectedNoTokenId = ref('')
 const selectedTickSize = ref('0.01')
 const selectedNegRisk = ref(false)
 const activeTab = ref('15m')
@@ -242,7 +243,7 @@ const totalPositionValue = computed(() => {
 })
 
 const orderForm = reactive({
-  side: 'BUY',
+  direction: 'UP',
   type: 'market',
   price: 0.50,
   amount: 10,
@@ -294,6 +295,7 @@ async function loadMarket() {
     currentMarket.value = data.market
     const tokens = typeof data.market.clobTokenIds === 'string' ? JSON.parse(data.market.clobTokenIds) : data.market.clobTokenIds
     if (tokens?.length > 0) selectedTokenId.value = tokens[0]
+    if (tokens?.length > 1) selectedNoTokenId.value = tokens[1]
 
     selectedTickSize.value = data.market.minimum_tick_size || '0.01'
     selectedNegRisk.value = !!data.market.neg_risk
@@ -319,6 +321,7 @@ async function selectShortMarket(row: any) {
   const market = row.markets?.[0]
   if (!market) return
   selectedTokenId.value = market.token_ids?.[0] || ''
+  selectedNoTokenId.value = market.token_ids?.[1] || ''
   selectedTickSize.value = market.tick_size || '0.01'
   selectedNegRisk.value = market.neg_risk || false
   currentMarket.value = { question: row.title_zh || row.title, volume: 0 }
@@ -397,13 +400,14 @@ async function placeOrder() {
     ElMessage.warning('请先选择市场')
     return
   }
+  // UP → BUY YES token, DOWN → BUY NO token
+  const tokenId = orderForm.direction === 'DOWN' ? (selectedNoTokenId.value || selectedTokenId.value) : selectedTokenId.value
   ordering.value = true
   try {
     if (orderForm.type === 'market') {
-      // 市价单：只传 USDC 金额，后端从 CLOB 实时读盘口价并计算 size
       const resp = await btcApi.order({
-        token_id: selectedTokenId.value,
-        side: orderForm.side,
+        token_id: tokenId,
+        side: 'BUY',
         order_type: 'GTC',
         tick_size: selectedTickSize.value,
         usdc_amount: orderForm.amount,
@@ -411,16 +415,15 @@ async function placeOrder() {
       const d = resp.data
       ElMessage.success(`下单成功: $${orderForm.amount} → ${d.size} 份 @ $${d.price}`)
     } else {
-      // 限价单：用户指定价格
       const price = Math.round(orderForm.price * 100) / 100
       if (price <= 0) { ElMessage.warning('价格必须大于 0'); return }
       const size = Math.floor(orderForm.amount / price)
       if (size <= 0) { ElMessage.warning('金额太小'); return }
       await btcApi.order({
-        token_id: selectedTokenId.value,
+        token_id: tokenId,
         price,
         size,
-        side: orderForm.side,
+        side: 'BUY',
         order_type: 'GTC',
         tick_size: selectedTickSize.value,
       })
