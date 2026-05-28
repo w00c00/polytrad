@@ -13,7 +13,9 @@
         <el-descriptions-item label="持仓总值">${{ totalValue }}</el-descriptions-item>
       </el-descriptions>
       <el-table :data="positions" size="small" v-loading="loading" style="margin-top:16px">
-        <el-table-column prop="title" label="市场" show-overflow-tooltip />
+        <el-table-column label="市场" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.title_zh || row.title }}</template>
+        </el-table-column>
         <el-table-column label="到期 (北京)" width="120">
           <template #default="{ row }">{{ row.endDate_bj || row.endDateIso_bj || '-' }}</template>
         </el-table-column>

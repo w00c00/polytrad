@@ -5,7 +5,7 @@ from app.db import get_db
 from app.models import User
 from app.deps import get_current_user
 from app.schemas import OrderReq, MarketOrderReq, SellReq, CancelOrderReq
-from app.services.polymarket import gamma_api, clob_api, to_beijing_time
+from app.services.polymarket import gamma_api, clob_api, to_beijing_time, translate_title
 from app.services.trading import place_limit_order, place_market_order, cancel_order, get_open_orders, cancel_all_orders, get_usdc_balance
 from app.services.scanner import scan_btc_short_markets
 
@@ -137,8 +137,10 @@ async def btc_positions(user: User = Depends(get_current_user), db: AsyncSession
         and not p.get("redeemed")
     ]
 
-    # 转换时间字段为北京时间
+    # 转换时间字段为北京时间 + 翻译标题
     for p in positions:
+        if p.get("title"):
+            p["title_zh"] = translate_title(p["title"])
         for key in ["createdAt", "updatedAt", "startDate", "endDate", "endDateIso"]:
             if key in p and p[key]:
                 p[f"{key}_bj"] = to_beijing_time(str(p[key]))
@@ -178,6 +180,68 @@ async def btc_cancel_all(user: User = Depends(get_current_user), db: AsyncSessio
         return await cancel_all_orders(user, db)
     except Exception as e:
         raise HTTPException(400, f"撤销失败: {e}")
+
+
+@router.post("/predict")
+async def btc_predict(
+    ai_config_id: int,
+    horizon_minutes: int = 15,
+    market_question: str = "",
+    up_price: float = 0.5,
+    down_price: float = 0.5,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """BTC 短周期预测：本地技术分析 + AI 综合判断"""
+    from app.services.btc_signal import analyze_btc_signal, build_llm_prompt
+    from app.services.ai_service import get_active_ai_config, analyze
+
+    # 1. 本地技术分析
+    signal = await analyze_btc_signal(horizon_minutes)
+
+    # 2. 本地结构化决策
+    prob_up = signal["prob_up"]
+    prob_down = signal["prob_down"]
+    confidence_value = signal["confidence_value"]
+    up_edge = prob_up - up_price
+    down_edge = prob_down - down_price
+
+    local_action = "不交易"
+    local_edge = ""
+    min_edge = 0.04
+    if up_edge >= min_edge and confidence_value >= 0.25:
+        local_action = "买UP"
+        local_edge = f"UP概率高于买价约 {up_edge * 100:.1f}%"
+    elif down_edge >= min_edge and confidence_value >= 0.25:
+        local_action = "买DOWN"
+        local_edge = f"DOWN概率高于买价约 {down_edge * 100:.1f}%"
+
+    # 3. AI 综合分析
+    ai_result = ""
+    try:
+        config = await get_active_ai_config(db, ai_config_id)
+        market_info = {
+            "question": market_question,
+            "period": f"{horizon_minutes}m",
+            "up_price": up_price,
+            "down_price": down_price,
+        }
+        prompt = build_llm_prompt(signal, market_info)
+        ai_result = await analyze(config, prompt)
+    except Exception as e:
+        ai_result = f"AI 分析失败: {e}"
+
+    return {
+        "signal": signal,
+        "local": {
+            "action": local_action,
+            "edge": local_edge,
+            "prob_up": prob_up,
+            "prob_down": prob_down,
+            "confidence": signal["confidence"],
+        },
+        "ai": ai_result,
+    }
 
 
 from app.services.polymarket import data_api

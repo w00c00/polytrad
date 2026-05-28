@@ -78,6 +78,17 @@ async def delete_notify_config(cid: int, user: User = Depends(get_current_user),
     return {"success": True}
 
 
+@router.post("/trade-report")
+async def push_trade_report(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """手动推送交易报告"""
+    from app.services.scheduler import send_trade_report
+    try:
+        result = await send_trade_report(user, db)
+        return {"success": True, "message": result}
+    except Exception as e:
+        raise HTTPException(400, f"推送失败: {e}")
+
+
 @router.post("/test")
 async def test_notify(req: NotifyTestReq, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """测试推送"""

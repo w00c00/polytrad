@@ -103,9 +103,10 @@
           <el-divider style="margin:8px 0" />
           <div v-if="positions.length > 0" style="font-size:12px;color:#666">
             <div style="font-size:12px;color:#999;margin-bottom:4px">持仓 ({{ positions.length }}) · 总值 ${{ totalPositionValue }}</div>
-            <div v-for="p in positions.slice(0, 5)" :key="p.asset" style="display:flex;justify-content:space-between;padding:2px 0">
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">{{ p.title }}</span>
-              <span :style="{ color: parseFloat(p.cashPnl || 0) >= 0 ? '#67c23a' : '#f56c6c' }">${{ parseFloat(p.currentValue || 0).toFixed(2) }}</span>
+            <div v-for="p in positions.slice(0, 5)" :key="p.asset" style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;gap:6px">
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">{{ p.title_zh || p.title }}</span>
+              <span :style="{ color: parseFloat(p.cashPnl || 0) >= 0 ? '#67c23a' : '#f56c6c', whiteSpace:'nowrap' }">${{ parseFloat(p.currentValue || 0).toFixed(2) }}</span>
+              <el-button size="small" type="danger" link @click="quickSell(p)" :loading="sellingAsset === p.asset">卖</el-button>
             </div>
             <div v-if="positions.length > 5" style="color:#999;margin-top:4px">还有 {{ positions.length - 5 }} 个持仓</div>
           </div>
@@ -130,7 +131,7 @@
             <el-form-item v-if="orderForm.type === 'limit'" label="价格">
               <el-input-number v-model="orderForm.price" :min="0.01" :max="0.99" :step="0.01" :precision="2" style="width:100%" />
             </el-form-item>
-            <el-form-item :label="orderForm.type === 'market' ? '金额 ($)' : '数量 (shares)'">
+            <el-form-item label="金额 (USDC)">
               <el-input-number v-model="orderForm.amount" :min="1" style="width:100%" />
             </el-form-item>
             <el-form-item>
@@ -157,14 +158,41 @@
         </el-card>
 
         <el-card style="margin-top:16px">
-          <template #header>AI 预测</template>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>BTC 短周期预测</span>
+              <span v-if="signalData" style="font-size:12px;color:#999">{{ signalData.fetched_at }}</span>
+            </div>
+          </template>
           <el-select v-model="aiConfigId" placeholder="选择AI模型" size="small" style="width:100%;margin-bottom:8px">
             <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
-          <el-button size="small" type="primary" @click="runPredict" :loading="predicting" :disabled="!selectedSlug || !aiConfigId" style="width:100%">
-            AI 概率预测
+          <el-button size="small" type="primary" @click="runPredict" :loading="predicting" :disabled="!aiConfigId" style="width:100%">
+            {{ selectedSlug ? 'AI 概率预测' : '本地技术分析' }}
           </el-button>
-          <div v-if="prediction" style="margin-top:12px;white-space:pre-wrap;font-size:13px">{{ prediction }}</div>
+
+          <!-- 本地信号 -->
+          <div v-if="signalData" style="margin-top:12px">
+            <div style="font-weight:bold;margin-bottom:6px">本地技术分析</div>
+            <div style="display:flex;gap:16px;margin-bottom:6px">
+              <div>UP: <span style="color:#67c23a;font-weight:bold">{{ (signalData.prob_up * 100).toFixed(1) }}%</span></div>
+              <div>DOWN: <span style="color:#f56c6c;font-weight:bold">{{ (signalData.prob_down * 100).toFixed(1) }}%</span></div>
+              <div>置信: {{ signalData.confidence }}</div>
+            </div>
+            <div style="font-size:12px;color:#666">
+              RSI {{ signalData.rsi }} | 波动率 {{ (signalData.vol * 100).toFixed(3) }}%
+            </div>
+            <div v-if="localAction" style="margin-top:6px;padding:6px 10px;border-radius:4px;font-weight:bold"
+              :style="{ background: localAction === '不交易' ? '#fdf6ec' : '#ecf5ff', color: localAction === '不交易' ? '#e6a23c' : '#409eff' }">
+              本地建议: {{ localAction }} {{ localEdge }}
+            </div>
+          </div>
+
+          <!-- AI 分析 -->
+          <div v-if="aiPrediction" style="margin-top:12px;border-top:1px solid #eee;padding-top:10px">
+            <div style="font-weight:bold;margin-bottom:6px">AI 综合分析</div>
+            <div style="white-space:pre-wrap;font-size:13px;line-height:1.6">{{ aiPrediction }}</div>
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -196,10 +224,15 @@ const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const predicting = ref(false)
 const prediction = ref('')
+const signalData = ref<any>(null)
+const localAction = ref('')
+const localEdge = ref('')
+const aiPrediction = ref('')
 const portfolioValue = ref<string | null>(null)
 const usdcBalance = ref('--')
 const positions = ref<any[]>([])
 const loadingPortfolio = ref(false)
+const sellingAsset = ref('')
 
 const totalPositionValue = computed(() => {
   return positions.value.reduce((sum, p) => sum + parseFloat(p.currentValue || 0), 0).toFixed(2)
@@ -278,7 +311,7 @@ function selectShortMarket(row: any) {
   selectedNegRisk.value = market.neg_risk || false
   yesPrice.value = market.yes_price || 0.5
   noPrice.value = market.no_price || 0.5
-  currentMarket.value = { question: row.title, volume: 0 }
+  currentMarket.value = { question: row.title_zh || row.title, volume: 0 }
   selectedSlug.value = row.event_slug || ''
   prediction.value = ''
 
@@ -303,6 +336,32 @@ function onTabChange() {
   }
 }
 
+function explainOrderError(msg: string): string {
+  const m = msg.toLowerCase()
+  if (m.includes('balance') || m.includes('allowance') || m.includes('insufficient'))
+    return 'USDC 余额不足，请先充值'
+  if (m.includes('fill') || m.includes('fok'))
+    return '市场流动性不足，无法成交'
+  if (m.includes('tick_size') || m.includes('tick size'))
+    return '价格不符合最小变动单位要求'
+  if (m.includes('neg_risk'))
+    return '该市场为负风险市场，下单参数有误'
+  if (m.includes('min') && m.includes('size'))
+    return '下单数量低于最低要求'
+  if (m.includes('cancel'))
+    return '订单已被取消'
+  if (m.includes('not found') || m.includes('404'))
+    return '市场或代币不存在'
+  if (m.includes('unauthorized') || m.includes('401'))
+    return '钱包未配置或已过期，请重新配置'
+  if (m.includes('timeout') || m.includes('network'))
+    return '网络超时，请稍后重试'
+  // 截取冒号后面的具体信息
+  const colon = msg.indexOf(':')
+  if (colon > 0) return msg.slice(colon + 1).trim()
+  return msg
+}
+
 async function placeOrder() {
   if (!selectedTokenId.value) {
     ElMessage.warning('请先选择市场')
@@ -316,7 +375,23 @@ async function placeOrder() {
         ? (asks.value.length > 0 ? Math.min(...asks.value.map((a: any) => parseFloat(a.price))) : yesPrice.value)
         : (bids.value.length > 0 ? Math.max(...bids.value.map((b: any) => parseFloat(b.price))) : noPrice.value)
       const price = Math.round(bookPrice * 100) / 100
+      if (price <= 0) { ElMessage.warning('无法获取盘口价格'); return }
       const size = Math.floor(orderForm.amount / price)
+      if (size <= 0) { ElMessage.warning('金额太小，无法转换为有效数量'); return }
+      await btcApi.order({
+        token_id: selectedTokenId.value,
+        price,
+        size,
+        side: orderForm.side,
+        order_type: 'GTC',
+        tick_size: selectedTickSize.value,
+      })
+    } else {
+      // 限价单：amount 是 USDC 金额，转换为 shares
+      const price = Math.round(orderForm.price * 100) / 100
+      if (price <= 0) { ElMessage.warning('价格必须大于 0'); return }
+      const size = Math.floor(orderForm.amount / price)
+      if (size <= 0) { ElMessage.warning('数量必须大于 0'); return }
       await btcApi.order({
         token_id: selectedTokenId.value,
         price,
@@ -328,7 +403,10 @@ async function placeOrder() {
     }
     ElMessage.success('下单成功')
     loadOrders()
-  } catch {} finally {
+  } catch (err: any) {
+    const raw = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error({ message: `下单失败: ${explainOrderError(String(raw))}`, duration: 5000 })
+  } finally {
     ordering.value = false
   }
 }
@@ -345,7 +423,10 @@ async function cancelOrder(id: string) {
     await btcApi.cancel(id)
     ElMessage.success('撤单成功')
     loadOrders()
-  } catch {}
+  } catch (err: any) {
+    const raw = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error(`撤单失败: ${explainOrderError(String(raw))}`)
+  }
 }
 
 async function cancelAllOrders() {
@@ -353,16 +434,65 @@ async function cancelAllOrders() {
     await btcApi.cancelAll()
     ElMessage.success('全部撤单成功')
     loadOrders()
-  } catch {}
+  } catch (err: any) {
+    const raw = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error(`撤单失败: ${explainOrderError(String(raw))}`)
+  }
+}
+
+async function quickSell(p: any) {
+  const tokenId = p.asset
+  if (!tokenId) { ElMessage.warning('无法获取持仓 token'); return }
+  const size = Math.floor(parseFloat(p.size || 0))
+  if (size <= 0) { ElMessage.warning('持仓数量为 0'); return }
+  sellingAsset.value = tokenId
+  try {
+    // 用盘口价卖出（取 bid 价）
+    const price = yesPrice.value > 0 ? Math.round(yesPrice.value * 100) / 100 : 0.01
+    await btcApi.order({
+      token_id: tokenId,
+      price,
+      size,
+      side: 'SELL',
+      order_type: 'GTC',
+      tick_size: '0.01',
+    })
+    ElMessage.success(`挂卖单成功: ${size} 份 @ $${price.toFixed(2)}`)
+    loadOrders()
+  } catch (err: any) {
+    const raw = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error({ message: `卖出失败: ${explainOrderError(String(raw))}`, duration: 5000 })
+  } finally {
+    sellingAsset.value = ''
+  }
 }
 
 async function runPredict() {
-  if (!selectedSlug.value || !aiConfigId.value) return
+  if (!aiConfigId.value) return
   predicting.value = true
-  prediction.value = ''
+  signalData.value = null
+  localAction.value = ''
+  localEdge.value = ''
+  aiPrediction.value = ''
+
+  // 从选中的短周期市场提取信息
+  const horizon = activeTab.value === '5m' ? 5 : 15
+  const question = currentMarket.value?.question || ''
+  const upPrice = yesPrice.value
+  const downPrice = noPrice.value
+
   try {
-    const { data } = await aiApi.analyzeMarket({ ai_config_id: aiConfigId.value, market_slug: selectedSlug.value, question: '分析这个BTC短周期市场，当前价格是否合理，UP和DOWN各有多大概率，给出交易建议。' })
-    prediction.value = data.analysis
+    const { data } = await btcApi.predict({
+      ai_config_id: aiConfigId.value,
+      horizon_minutes: horizon,
+      market_question: question,
+      up_price: upPrice,
+      down_price: downPrice,
+    })
+    signalData.value = data.signal
+    localAction.value = data.local.action
+    localEdge.value = data.local.edge ? `(${data.local.edge})` : ''
+    aiPrediction.value = data.ai
   } catch {} finally { predicting.value = false }
 }
 

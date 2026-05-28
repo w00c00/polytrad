@@ -14,7 +14,9 @@
       </template>
 
       <el-table :data="results" size="small" v-loading="loading" @row-click="selectRow" highlight-current-row>
-        <el-table-column prop="title" label="事件" show-overflow-tooltip />
+        <el-table-column label="事件" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.title_zh || row.title }}</template>
+        </el-table-column>
         <el-table-column label="YES总和" width="100">
           <template #default="{ row }">{{ row.yes_sum.toFixed(4) }}</template>
         </el-table-column>
@@ -86,7 +88,7 @@
 
     <el-dialog v-model="showDetail" title="套利详情" width="700">
       <el-descriptions :column="2" border size="small" v-if="selected">
-        <el-descriptions-item label="事件">{{ selected.title }}</el-descriptions-item>
+        <el-descriptions-item label="事件">{{ selected.title_zh || selected.title }}</el-descriptions-item>
         <el-descriptions-item label="YES总和">{{ selected.yes_sum.toFixed(4) }}</el-descriptions-item>
         <el-descriptions-item label="偏差">{{ selected.deviation.toFixed(4) }}</el-descriptions-item>
         <el-descriptions-item label="建议方向">

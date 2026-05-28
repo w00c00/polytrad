@@ -95,6 +95,12 @@
             </el-tab-pane>
           </el-tabs>
 
+          <el-divider>手动推送</el-divider>
+          <el-button size="small" type="success" :loading="pushLoading" @click="pushTradeReport" style="margin-bottom:12px">
+            推送交易报告
+          </el-button>
+          <el-text size="small" type="info" style="display:block;margin-bottom:12px">手动推送当前持仓和最近交易到已配置的推送渠道</el-text>
+
           <el-divider>已配置</el-divider>
           <el-table :data="notifyConfigs" size="small">
             <el-table-column prop="channel" label="渠道" width="100" />
@@ -130,6 +136,7 @@ const scForm = reactive({ sendkey: '' })
 const tgForm = reactive({ bot_token: '', chat_id: '' })
 const pwdForm = reactive({ old_password: '', new_password: '' })
 const pwdLoading = ref(false)
+const pushLoading = ref(false)
 
 async function changePwd() {
   if (!pwdForm.old_password || !pwdForm.new_password) { ElMessage.warning('请填写完整'); return }
@@ -204,6 +211,14 @@ async function loadNotifyConfigs() {
 async function deleteNotify(id: number) {
   await notifyApi.deleteConfig(id)
   loadNotifyConfigs()
+}
+
+async function pushTradeReport() {
+  pushLoading.value = true
+  try {
+    const { data } = await notifyApi.tradeReport()
+    ElMessage.success(data.message || '交易报告已推送')
+  } catch {} finally { pushLoading.value = false }
 }
 
 onMounted(() => {

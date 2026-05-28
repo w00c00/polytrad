@@ -28,6 +28,16 @@ async def register(req: RegisterReq, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    # 通知管理员有新用户注册
+    try:
+        admins = (await db.execute(select(User).where(User.role == "admin", User.status == "approved"))).scalars().all()
+        from app.services.notification import notify_user
+        for admin in admins:
+            await notify_user(db, admin, "新用户注册", f"用户名: {req.username}\n状态: 待审核\n请及时处理。")
+    except Exception:
+        pass
+
     return user
 
 

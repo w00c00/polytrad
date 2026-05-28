@@ -9,17 +9,22 @@
               <el-button size="small" type="primary" @click="loadEvents" :loading="loading">刷新赛事</el-button>
             </div>
           </template>
-          <el-table :data="events" size="small" @row-click="selectEvent" highlight-current-row>
+          <el-tabs v-model="sportsTab">
+            <el-tab-pane label="近期比赛" name="games" />
+            <el-tab-pane label="赛事冠军" name="champs" />
+          </el-tabs>
+
+          <el-table :data="filteredEvents" size="small" @row-click="selectEvent" highlight-current-row max-height="500">
             <el-table-column label="赛事" show-overflow-tooltip>
               <template #default="{ row }">{{ row.title_zh || row.title }}</template>
             </el-table-column>
             <el-table-column label="截止时间 (北京)" width="140">
               <template #default="{ row }">{{ row.end_date_bj || '-' }}</template>
             </el-table-column>
-            <el-table-column label="24h成交量" width="120">
+            <el-table-column label="成交量" width="100">
               <template #default="{ row }">${{ (row.volume_24h || 0).toLocaleString() }}</template>
             </el-table-column>
-            <el-table-column label="市场数" width="80">
+            <el-table-column label="市场" width="60">
               <template #default="{ row }">{{ row.markets?.length || 0 }}</template>
             </el-table-column>
           </el-table>
@@ -81,7 +86,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { sportsApi, aiApi } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -90,6 +95,14 @@ const ordering = ref(false)
 const predicting = ref(false)
 const events = ref<any[]>([])
 const selectedEvent = ref<any>(null)
+const sportsTab = ref('games')
+
+const filteredEvents = computed(() => {
+  if (sportsTab.value === 'games') {
+    return events.value.filter(e => e.is_game)
+  }
+  return events.value.filter(e => !e.is_game)
+})
 const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const prediction = ref('')
@@ -117,16 +130,34 @@ function quickBuy(row: any) {
   }
 }
 
+function explainOrderError(msg: string): string {
+  const m = msg.toLowerCase()
+  if (m.includes('balance') || m.includes('allowance') || m.includes('insufficient'))
+    return 'USDC 余额不足，请先充值'
+  if (m.includes('fill') || m.includes('fok'))
+    return '市场流动性不足，无法成交'
+  if (m.includes('tick_size') || m.includes('tick size'))
+    return '价格不符合最小变动单位要求'
+  if (m.includes('timeout') || m.includes('network'))
+    return '网络超时，请稍后重试'
+  const colon = msg.indexOf(':')
+  if (colon > 0) return msg.slice(colon + 1).trim()
+  return msg
+}
+
 async function placeOrder() {
   if (!form.tokenId) { ElMessage.warning('请先点击买YES选择市场'); return }
   ordering.value = true
   try {
-    // amount 是 USDC 金额，转换为 shares: shares = amount / price
-    const price = form.price || 0.5
+    const price = Math.round((form.price || 0.5) * 100) / 100
     const size = Math.floor(form.amount / price)
-    await sportsApi.order({ token_id: form.tokenId, price, size, side: form.side, order_type: 'FOK' })
-    ElMessage.success(`下单成功: ${size} shares @ $${price.toFixed(3)}`)
-  } catch {} finally { ordering.value = false }
+    if (size <= 0) { ElMessage.warning('金额太小'); return }
+    await sportsApi.order({ token_id: form.tokenId, price, size, side: form.side, order_type: 'GTC' })
+    ElMessage.success(`下单成功: ${size} 份 @ $${price.toFixed(3)}`)
+  } catch (err: any) {
+    const raw = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error({ message: `下单失败: ${explainOrderError(String(raw))}`, duration: 5000 })
+  } finally { ordering.value = false }
 }
 
 async function runPredict() {

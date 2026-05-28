@@ -49,9 +49,13 @@ async def notify_user(db: AsyncSession, user: User, title: str, body: str):
             data = json.loads(config_data)
 
             if cfg.channel == "serverchan":
-                await send_serverchan(data["sendkey"], title, body)
+                # ServerChan 用 markdown，\n 需要是真正的换行符
+                md_body = body.replace("\n", "\n\n")
+                await send_serverchan(data["sendkey"], title, md_body)
             elif cfg.channel == "telegram":
-                await send_telegram(data["bot_token"], data["chat_id"], f"<b>{title}</b>\n{body}")
+                # Telegram HTML 模式：换行用 \n
+                tg_text = f"<b>{title}</b>\n\n{body}"
+                await send_telegram(data["bot_token"], data["chat_id"], tg_text)
         except Exception as e:
             logger.error(f"推送失败 (user={user.id}, channel={cfg.channel}): {e}")
 

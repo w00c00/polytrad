@@ -69,6 +69,7 @@ export const btcApi = {
   orders: () => api.get('/btc/orders'),
   cancel: (id: string) => api.delete(`/btc/order/${id}`),
   cancelAll: () => api.post('/btc/cancel-all'),
+  predict: (params: any) => api.post('/btc/predict', null, { params }),
 }
 
 // Sports
@@ -115,4 +116,5 @@ export const notifyApi = {
   saveConfig: (data: any) => api.post('/notify/config', data),
   deleteConfig: (id: number) => api.delete(`/notify/config/${id}`),
   test: (data: any) => api.post('/notify/test', data),
+  tradeReport: () => api.post('/notify/trade-report'),
 }
