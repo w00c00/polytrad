@@ -13,12 +13,16 @@ CHINA_KEYWORDS = ["china", "chinese", "beijing", "xi jinping", "xi jin ping", "c
 SPORTS_KEYWORDS = ["sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball", "tennis", "ufc", "f1", "world cup"]
 
 # BTC 短周期 series 列表
-BTC_SHORT_SERIES = [
+# timestamp 型: slug 格式为 {prefix}-{unix_ts}，可直接构造查询
+BTC_TIMESTAMP_SERIES = [
     {"slug": "btc-up-or-down-5m", "prefix": "btc-updown-5m", "label": "5分钟", "interval": 300},
     {"slug": "btc-up-or-down-15m", "prefix": "btc-updown-15m", "label": "15分钟", "interval": 900},
-    {"slug": "btc-up-or-down-1h", "prefix": "btc-updown-1h", "label": "1小时", "interval": 3600},
     {"slug": "btc-up-or-down-4h", "prefix": "btc-updown-4h", "label": "4小时", "interval": 14400},
-    {"slug": "btc-up-or-down-1d", "prefix": "btc-updown-1d", "label": "1天", "interval": 86400},
+]
+# series 型: 通过 series 端点获取 events，slug 为日期格式
+BTC_SERIES_FETCH = [
+    {"slug": "btc-up-or-down-hourly", "label": "1小时"},
+    {"slug": "btc-up-or-down-daily", "label": "1天"},
 ]
 
 
@@ -46,13 +50,13 @@ def _extract_market_info(event: dict) -> list[dict]:
 
 
 async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
-    """扫描 BTC 短周期市场 (5m/15m)，通过时间戳直接查当前周期"""
+    """扫描 BTC 短周期市场 (5m/15m/4h/1h/1d)"""
     import asyncio
     now_ts = int(datetime.now(timezone.utc).timestamp())
 
-    # 构建所有需要查询的 slug
+    # 1. timestamp 型 series: 直接构造 slug 查询
     slugs = []
-    for series_info in BTC_SHORT_SERIES:
+    for series_info in BTC_TIMESTAMP_SERIES:
         interval = series_info["interval"]
         prefix = series_info["prefix"]
         current_end = (now_ts // interval) * interval
@@ -60,8 +64,7 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
             ts = current_end + offset * interval
             slugs.append((f"{prefix}-{ts}", series_info["label"]))
 
-    # 并发查询
-    async def fetch_one(slug, label):
+    async def fetch_by_slug(slug, label):
         try:
             event = await gamma_api.get_event(slug)
             if not event or not event.get("active"):
@@ -79,9 +82,42 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
         except Exception:
             return None
 
-    tasks = [fetch_one(slug, label) for slug, label in slugs]
+    # 2. series 型: 通过 series 端点获取 events
+    async def fetch_from_series(series_info):
+        try:
+            data = await gamma_api.get_series(series_info["slug"])
+            if not data:
+                return []
+            events = data.get("events", [])
+            results = []
+            for event in events:
+                if not event.get("active"):
+                    continue
+                title = event.get("title", "")
+                results.append({
+                    "event_slug": event.get("slug", ""),
+                    "title": title,
+                    "title_zh": translate_title(title),
+                    "series_label": series_info["label"],
+                    "start_time_bj": to_beijing_time(event.get("startTime") or event.get("startDate")),
+                    "end_time_bj": to_beijing_time(event.get("endDate")),
+                    "markets": _extract_market_info(event),
+                })
+            return results
+        except Exception:
+            return []
+
+    tasks = [fetch_by_slug(slug, label) for slug, label in slugs]
+    tasks += [fetch_from_series(s) for s in BTC_SERIES_FETCH]
+
     raw = await asyncio.gather(*tasks)
-    results = [r for r in raw if r is not None]
+    results = []
+    for r in raw:
+        if isinstance(r, list):
+            results.extend(r)
+        elif r is not None:
+            results.append(r)
+
     results.sort(key=lambda x: x.get("start_time_bj", ""))
     return results
 
