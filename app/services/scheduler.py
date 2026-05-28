@@ -126,8 +126,10 @@ async def job_position_report():
 
 
 async def send_trade_report(user: User, db):
-    """手动推送交易报告"""
+    """手动推送交易报告（含24h盈亏）"""
     from app.models import Credential
+    from datetime import datetime, timezone, timedelta
+
     result = await db.execute(
         select(Credential).where(Credential.user_id == user.id, Credential.is_active == True)
     )
@@ -136,44 +138,101 @@ async def send_trade_report(user: User, db):
         return "未配置钱包"
 
     addr = cred.funder_address or cred.wallet_address
-    positions = await data_api.get_positions(addr)
-    positions = [p for p in positions if float(p.get("size", 0)) > 0.000001 and not p.get("redeemable") and not p.get("redeemed")]
-    value = await data_api.get_value(addr)
+    now = datetime.now(timezone.utc)
+    bj = timezone(timedelta(hours=8))
+
+    # 并发获取数据
+    import asyncio
+    positions_raw, closed, value, trades = await asyncio.gather(
+        data_api.get_positions(addr),
+        data_api.get_closed_positions(addr),
+        data_api.get_value(addr),
+        data_api.get_trades(addr, limit=100),
+    )
+
+    # 当前持仓（过滤无效）
+    positions = [p for p in positions_raw if float(p.get("size", 0)) > 0.000001 and not p.get("redeemable") and not p.get("redeemed")]
+
+    # 总资产
     total = 0.0
     if isinstance(value, list) and value:
         total = float(value[0].get("value", 0))
     elif isinstance(value, dict):
         total = float(value.get("value", 0))
 
-    trades = await data_api.get_trades(addr, limit=10)
-    from datetime import datetime, timezone, timedelta
-    bj = timezone(timedelta(hours=8))
+    # 24h 已实现盈亏（从已平仓）
+    ts_24h = int((now - timedelta(hours=24)).timestamp())
+    pnl_24h_realized = 0.0
+    closed_24h = []
+    for c in (closed or []):
+        cts = int(c.get("timestamp", 0))
+        if cts >= ts_24h:
+            pnl_24h_realized += float(c.get("realizedPnl", 0))
+            closed_24h.append(c)
 
-    title = f"交易报告 - ${total:,.2f}"
-    lines = [f"当前持仓 ({len(positions)} 个):"]
-    for p in positions[:5]:
-        pnl = float(p.get("cashPnl", 0))
-        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
-        t = translate_title(p.get("title", "N/A"))
-        lines.append(f"• {t}")
-        lines.append(f"  ${float(p.get('currentValue', 0)):.2f} ({pnl_str})")
+    # 当前持仓未实现盈亏
+    pnl_unrealized = sum(float(p.get("cashPnl", 0)) for p in positions)
 
-    if trades:
+    # 24h 交易次数
+    trades_24h = [t for t in (trades or []) if int(t.get("timestamp", 0)) >= ts_24h]
+
+    # 构建报告
+    pnl_24h_total = pnl_24h_realized + pnl_unrealized
+    pnl_sign = "+" if pnl_24h_total >= 0 else ""
+    title = f"交易报告 - ${total:,.2f} ({pnl_sign}${pnl_24h_total:.2f}/24h)"
+
+    lines = []
+    # 24h 盈亏摘要
+    lines.append(f"24h 盈亏: {pnl_sign}${pnl_24h_total:.2f}")
+    r_sign = "+" if pnl_24h_realized >= 0 else ""
+    lines.append(f"  已实现: {r_sign}${pnl_24h_realized:.2f} ({len(closed_24h)} 笔)")
+    u_sign = "+" if pnl_unrealized >= 0 else ""
+    lines.append(f"  持仓浮盈: {u_sign}${pnl_unrealized:.2f}")
+    lines.append(f"24h 交易: {len(trades_24h)} 笔")
+    lines.append(f"总资产: ${total:,.2f}")
+
+    # 当前持仓
+    if positions:
         lines.append("")
-        lines.append("最近交易:")
-        for t in trades[:5]:
+        lines.append(f"当前持仓 ({len(positions)} 个):")
+        for p in positions[:5]:
+            pnl = float(p.get("cashPnl", 0))
+            pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+            t = translate_title(p.get("title", "N/A"))
+            lines.append(f"• {t}")
+            lines.append(f"  ${float(p.get('currentValue', 0)):.2f} ({pnl_str})")
+        if len(positions) > 5:
+            lines.append(f"  ...还有 {len(positions) - 5} 个")
+
+    # 24h 已平仓盈亏明细
+    if closed_24h:
+        lines.append("")
+        lines.append("24h 已平仓:")
+        for c in closed_24h[:5]:
+            pnl = float(c.get("realizedPnl", 0))
+            pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+            t = translate_title(c.get("title", "N/A"))
+            lines.append(f"• {t} {pnl_str}")
+        if len(closed_24h) > 5:
+            lines.append(f"  ...还有 {len(closed_24h) - 5} 笔")
+
+    # 最近交易
+    if trades_24h:
+        lines.append("")
+        lines.append("24h 交易记录:")
+        for t in trades_24h[:5]:
             ts = t.get("timestamp", "")
             if ts:
                 try:
-                    dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
                     ts = dt.astimezone(bj).strftime("%m-%d %H:%M")
                 except (ValueError, TypeError):
                     pass
             trade_title = translate_title(t.get("title", ""))
             lines.append(f"• [{ts}] {t.get('side', '')} {trade_title}")
-            lines.append(f"  价格: ${float(t.get('price', 0)):.3f}")
+            lines.append(f"  {float(t.get('size', 0)):.0f}份 @ ${float(t.get('price', 0)):.3f}")
+        if len(trades_24h) > 5:
+            lines.append(f"  ...还有 {len(trades_24h) - 5} 笔")
 
     body = "\n".join(lines)
     await notify_user(db, user, title, body)
