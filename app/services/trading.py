@@ -175,8 +175,10 @@ async def place_market_order(
 
 async def cancel_order(user: User, db: AsyncSession, order_id: str) -> dict:
     """撤单"""
+    _load_clob_libs()
     client = await get_clob_client(user, db)
-    resp = client.cancel_order(order_id)
+    from py_clob_client_v2.clob_types import OrderPayload
+    resp = client.cancel_order(OrderPayload(orderID=order_id))
     return {"cancelled": True, "response": resp}
 
 
