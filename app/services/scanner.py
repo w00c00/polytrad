@@ -16,6 +16,9 @@ SPORTS_KEYWORDS = ["sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "b
 BTC_SHORT_SERIES = [
     {"slug": "btc-up-or-down-5m", "prefix": "btc-updown-5m", "label": "5分钟", "interval": 300},
     {"slug": "btc-up-or-down-15m", "prefix": "btc-updown-15m", "label": "15分钟", "interval": 900},
+    {"slug": "btc-up-or-down-1h", "prefix": "btc-updown-1h", "label": "1小时", "interval": 3600},
+    {"slug": "btc-up-or-down-4h", "prefix": "btc-updown-4h", "label": "4小时", "interval": 14400},
+    {"slug": "btc-up-or-down-1d", "prefix": "btc-updown-1d", "label": "1天", "interval": 86400},
 ]
 
 
