@@ -149,11 +149,9 @@ async function placeOrder() {
   if (!form.tokenId) { ElMessage.warning('请先点击买YES选择市场'); return }
   ordering.value = true
   try {
-    const price = Math.round((form.price || 0.5) * 100) / 100
-    const size = Math.floor(form.amount / price)
-    if (size <= 0) { ElMessage.warning('金额太小'); return }
-    await sportsApi.order({ token_id: form.tokenId, price, size, side: form.side, order_type: 'GTC' })
-    ElMessage.success(`下单成功: $${form.amount} → ${size} 份 @ $${price.toFixed(3)}`)
+    const resp = await sportsApi.order({ token_id: form.tokenId, side: form.side, order_type: 'GTC', usdc_amount: form.amount })
+    const d = resp.data
+    ElMessage.success(`下单成功: $${form.amount} → ${d.size} 份 @ $${d.price}`)
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error({ message: `下单失败: ${explainOrderError(String(raw))}`, duration: 5000 })

@@ -49,12 +49,13 @@ class WalletResp(BaseModel):
 # === Trading ===
 class OrderReq(BaseModel):
     token_id: str
-    price: float
-    size: float
+    price: float = 0
+    size: float = 0
     side: str  # BUY / SELL
     order_type: str = "GTC"  # GTC / FOK / FAK
     tick_size: str = "0.01"
     neg_risk: bool = False
+    usdc_amount: float = 0  # > 0 时自动从 CLOB 读盘口价计算 size
 
 
 class MarketOrderReq(BaseModel):

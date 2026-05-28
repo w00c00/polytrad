@@ -61,6 +61,7 @@ async def hot_order(req: OrderReq, user: User = Depends(get_current_user), db: A
             token_id=req.token_id, price=req.price, size=req.size,
             side=req.side, order_type=req.order_type,
             tick_size=req.tick_size,
+            usdc_amount=req.usdc_amount,
         )
     except Exception as e:
         raise HTTPException(400, f"下单失败: {e}")

@@ -154,18 +154,16 @@ function expandDetail(row: any) {
 
 async function executeArb(row: any) {
   if (!row.token_ids?.length) return
-  const price = row.yes_price || 0.5
-  const size = Math.floor(orderAmount.value / price)
   try {
-    await arbitrageApi.execute({
+    const resp = await arbitrageApi.execute({
       token_id: row.token_ids[0],
-      price,
-      size,
       side: 'BUY',
       neg_risk: true,
       tick_size: row.tick_size || '0.01',
+      usdc_amount: orderAmount.value,
     })
-    ElMessage.success(`套利下单成功: $${orderAmount.value} → ${size} 份 @ $${price.toFixed(3)}`)
+    const d = resp.data
+    ElMessage.success(`套利下单成功: $${orderAmount.value} → ${d.size} 份 @ $${d.price}`)
   } catch {}
 }
 

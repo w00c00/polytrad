@@ -59,7 +59,7 @@ async def get_btc_market(slug: str, user: User = Depends(get_current_user)):
 
 @router.post("/order")
 async def btc_place_order(req: OrderReq, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """下限价单"""
+    """下限价单。传 usdc_amount > 0 时自动从 CLOB 读盘口价"""
     try:
         result = await place_limit_order(
             user, db,
@@ -69,6 +69,7 @@ async def btc_place_order(req: OrderReq, user: User = Depends(get_current_user),
             side=req.side,
             order_type=req.order_type,
             tick_size=req.tick_size,
+            usdc_amount=req.usdc_amount,
         )
         return result
     except Exception as e:

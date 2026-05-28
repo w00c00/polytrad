@@ -399,37 +399,33 @@ async function placeOrder() {
   }
   ordering.value = true
   try {
-    let price: number
     if (orderForm.type === 'market') {
-      // 市价单：先确保有实时盘口价
-      if (asks.value.length === 0 && bids.value.length === 0 && selectedSlug.value) {
-        try {
-          const { data } = await btcApi.market(selectedSlug.value)
-          const yesBook = data.orderbook?.YES
-          bids.value = (yesBook?.bids || []).slice(0, 10)
-          asks.value = (yesBook?.asks || []).slice(0, 10)
-        } catch {}
-      }
-      const bookPrice = orderForm.side === 'BUY'
-        ? (asks.value.length > 0 ? Math.min(...asks.value.map((a: any) => parseFloat(a.price))) : yesPrice.value)
-        : (bids.value.length > 0 ? Math.max(...bids.value.map((b: any) => parseFloat(b.price))) : noPrice.value)
-      price = Math.round(bookPrice * 100) / 100
-      if (price <= 0) { ElMessage.warning('无法获取盘口价格'); return }
+      // 市价单：只传 USDC 金额，后端从 CLOB 实时读盘口价并计算 size
+      const resp = await btcApi.order({
+        token_id: selectedTokenId.value,
+        side: orderForm.side,
+        order_type: 'GTC',
+        tick_size: selectedTickSize.value,
+        usdc_amount: orderForm.amount,
+      })
+      const d = resp.data
+      ElMessage.success(`下单成功: $${orderForm.amount} → ${d.size} 份 @ $${d.price}`)
     } else {
-      price = Math.round(orderForm.price * 100) / 100
+      // 限价单：用户指定价格
+      const price = Math.round(orderForm.price * 100) / 100
       if (price <= 0) { ElMessage.warning('价格必须大于 0'); return }
+      const size = Math.floor(orderForm.amount / price)
+      if (size <= 0) { ElMessage.warning('金额太小'); return }
+      await btcApi.order({
+        token_id: selectedTokenId.value,
+        price,
+        size,
+        side: orderForm.side,
+        order_type: 'GTC',
+        tick_size: selectedTickSize.value,
+      })
+      ElMessage.success(`下单成功: $${orderForm.amount} → ${size} 份 @ $${price.toFixed(3)}`)
     }
-    const size = Math.floor(orderForm.amount / price)
-    if (size <= 0) { ElMessage.warning('金额太小，无法转换为有效数量'); return }
-    await btcApi.order({
-      token_id: selectedTokenId.value,
-      price,
-      size,
-      side: orderForm.side,
-      order_type: 'GTC',
-      tick_size: selectedTickSize.value,
-    })
-    ElMessage.success(`下单成功: $${orderForm.amount} → ${size} 份 @ $${price.toFixed(3)}`)
     loadOrders()
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'

@@ -42,11 +42,12 @@ async def arbitrage_results(
 @router.post("/execute")
 async def arbitrage_execute(
     token_id: str,
-    price: float,
-    size: float,
-    side: str,
+    price: float = 0,
+    size: float = 0,
+    side: str = "BUY",
     tick_size: str = "0.01",
     neg_risk: bool = True,
+    usdc_amount: float = 0,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -57,6 +58,7 @@ async def arbitrage_execute(
             token_id=token_id, price=price, size=size,
             side=side, order_type="GTC",
             tick_size=tick_size,
+            usdc_amount=usdc_amount,
         )
     except Exception as e:
         raise HTTPException(400, f"套利下单失败: {e}")

@@ -93,23 +93,67 @@ async def setup_wallet(private_key: str, chain_id: int = 137, funder_address: st
     }
 
 
+def _clamp_price(price: float, tick_size: str) -> float:
+    """将价格对齐到 tick_size"""
+    tick = float(tick_size)
+    decimals = len(str(tick).rstrip('0').split('.')[-1]) if '.' in str(tick) else 0
+    return round(min(max(price, tick), 1.0 - tick), decimals)
+
+
+def _best_price_from_book(book: dict, side: str) -> tuple[float | None, str]:
+    """从订单簿获取 best ask (BUY) 或 best bid (SELL)，返回 (价格, tick_size)"""
+    raw_levels = book.get("asks" if side == "BUY" else "bids", [])
+    tick_size = str(book.get("tick_size", "0.01"))
+    prices = []
+    for level in raw_levels:
+        p = level.get("price") if isinstance(level, dict) else getattr(level, "price", None)
+        if p is not None:
+            try:
+                prices.append(float(p))
+            except (ValueError, TypeError):
+                pass
+    if not prices:
+        return None, tick_size
+    return (min(prices) if side == "BUY" else max(prices)), tick_size
+
+
 async def place_limit_order(
     user: User, db: AsyncSession,
     token_id: str, price: float, size: float,
     side: str, order_type: str = "GTC",
     tick_size: str = "0.01",
     market_slug: str = "", condition_id: str = "",
+    usdc_amount: float = 0,
 ) -> dict:
-    """下限价单"""
+    """下限价单。若传 usdc_amount > 0，则从 CLOB 实时读盘口价并自动计算 size"""
+    _load_clob_libs()
     client = await get_clob_client(user, db)
+
+    # 市价模式：从 CLOB 实时读盘口价
+    if usdc_amount > 0:
+        orderbook = client.get_order_book(token_id)
+        book_dict = orderbook if isinstance(orderbook, dict) else {
+            "asks": getattr(orderbook, "asks", []),
+            "bids": getattr(orderbook, "bids", []),
+            "tick_size": getattr(orderbook, "tick_size", "0.01"),
+        }
+        best_price, real_tick = _best_price_from_book(book_dict, side)
+        if best_price is None:
+            raise ValueError("订单簿没有可买卖价")
+        tick_size = real_tick or tick_size
+        price = _clamp_price(best_price, tick_size)
+        size = usdc_amount / price
+        if size < 5.0:
+            raise ValueError(f"买入金额太小，按价格 {price:.4f} 至少需要 {price * 5:.2f} USDC")
+        logger.info("实时盘口价: %s price=%.4f size=%.4f tick=%s", side, price, size, tick_size)
 
     side_const = _Side.BUY if side == "BUY" else _Side.SELL
     otype = getattr(_OrderType, order_type, _OrderType.GTC)
 
     order_args = _OrderArgs(
         token_id=token_id,
-        price=price,
-        size=size,
+        price=float(price),
+        size=float(size),
         side=side_const,
     )
     options = _PartialCreateOrderOptions(tick_size=tick_size)
@@ -132,7 +176,7 @@ async def place_limit_order(
     await db.commit()
     await db.refresh(trade)
 
-    return {"trade_id": trade.id, "order_id": trade.order_id, "response": resp}
+    return {"trade_id": trade.id, "order_id": trade.order_id, "price": price, "size": size, "response": resp}
 
 
 async def place_market_order(
