@@ -165,7 +165,7 @@ async function executeArb(row: any) {
       neg_risk: true,
       tick_size: row.tick_size || '0.01',
     })
-    ElMessage.success(`套利下单成功: ${size} shares @ $${price.toFixed(3)}`)
+    ElMessage.success(`套利下单成功: $${orderAmount.value} → ${size} 份 @ $${price.toFixed(3)}`)
   } catch {}
 }
 

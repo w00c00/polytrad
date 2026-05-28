@@ -153,7 +153,7 @@ async function placeOrder() {
     const size = Math.floor(form.amount / price)
     if (size <= 0) { ElMessage.warning('金额太小'); return }
     await sportsApi.order({ token_id: form.tokenId, price, size, side: form.side, order_type: 'GTC' })
-    ElMessage.success(`下单成功: ${size} 份 @ $${price.toFixed(3)}`)
+    ElMessage.success(`下单成功: $${form.amount} → ${size} 份 @ $${price.toFixed(3)}`)
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error({ message: `下单失败: ${explainOrderError(String(raw))}`, duration: 5000 })

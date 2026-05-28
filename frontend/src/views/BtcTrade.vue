@@ -376,39 +376,29 @@ async function placeOrder() {
   }
   ordering.value = true
   try {
+    let price: number
     if (orderForm.type === 'market') {
       // 市价单：用盘口价下 GTC 限价单（避免 FOK 流动性不足失败）
       const bookPrice = orderForm.side === 'BUY'
         ? (asks.value.length > 0 ? Math.min(...asks.value.map((a: any) => parseFloat(a.price))) : yesPrice.value)
         : (bids.value.length > 0 ? Math.max(...bids.value.map((b: any) => parseFloat(b.price))) : noPrice.value)
-      const price = Math.round(bookPrice * 100) / 100
+      price = Math.round(bookPrice * 100) / 100
       if (price <= 0) { ElMessage.warning('无法获取盘口价格'); return }
-      const size = Math.floor(orderForm.amount / price)
-      if (size <= 0) { ElMessage.warning('金额太小，无法转换为有效数量'); return }
-      await btcApi.order({
-        token_id: selectedTokenId.value,
-        price,
-        size,
-        side: orderForm.side,
-        order_type: 'GTC',
-        tick_size: selectedTickSize.value,
-      })
     } else {
-      // 限价单：amount 是 USDC 金额，转换为 shares
-      const price = Math.round(orderForm.price * 100) / 100
+      price = Math.round(orderForm.price * 100) / 100
       if (price <= 0) { ElMessage.warning('价格必须大于 0'); return }
-      const size = Math.floor(orderForm.amount / price)
-      if (size <= 0) { ElMessage.warning('数量必须大于 0'); return }
-      await btcApi.order({
-        token_id: selectedTokenId.value,
-        price,
-        size,
-        side: orderForm.side,
-        order_type: 'GTC',
-        tick_size: selectedTickSize.value,
-      })
     }
-    ElMessage.success('下单成功')
+    const size = Math.floor(orderForm.amount / price)
+    if (size <= 0) { ElMessage.warning('金额太小，无法转换为有效数量'); return }
+    await btcApi.order({
+      token_id: selectedTokenId.value,
+      price,
+      size,
+      side: orderForm.side,
+      order_type: 'GTC',
+      tick_size: selectedTickSize.value,
+    })
+    ElMessage.success(`下单成功: $${orderForm.amount} → ${size} 份 @ $${price.toFixed(3)}`)
     loadOrders()
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'
@@ -464,7 +454,7 @@ async function quickSell(p: any) {
       order_type: 'GTC',
       tick_size: '0.01',
     })
-    ElMessage.success(`挂卖单成功: ${size} 份 @ $${price.toFixed(2)}`)
+    ElMessage.success(`挂卖单成功: ${size} 份 @ $${price.toFixed(3)} ≈ $${(size * price).toFixed(2)}`)
     loadOrders()
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'

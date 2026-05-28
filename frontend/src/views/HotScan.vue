@@ -125,7 +125,7 @@ async function quickBuy(row: any) {
       tick_size: row.tick_size || '0.01',
       neg_risk: row.neg_risk || false,
     })
-    ElMessage.success(`下单成功: ${size} shares @ $${price.toFixed(3)}`)
+    ElMessage.success(`下单成功: $${orderAmount.value} → ${size} 份 @ $${price.toFixed(3)}`)
   } catch {}
 }
 
