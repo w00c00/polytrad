@@ -29,7 +29,18 @@ async def _cached_scan(key: str, scan_func, *args, **kwargs) -> list:
 # Polymarket 政治相关 tag 的常见 slug 片段
 POLITICAL_KEYWORDS = ["politic", "election", "president", "congress", "senate", "governor", "democrat", "republican", "trump", "biden"]
 CHINA_KEYWORDS = ["china", "chinese", "beijing", "xi jinping", "xi jin ping", "ccp", "communist party of china", "taiwan", "hong kong", "hongkong", "tibet", "xinjiang", "中国", "中共", "习近平", "台湾", "香港", "西藏", "新疆"]
-SPORTS_KEYWORDS = ["sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball", "tennis", "ufc", "f1", "world cup"]
+SPORTS_KEYWORDS = [
+    # 通用 + 联盟
+    "sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball",
+    "tennis", "ufc", "f1", "fifa",
+    # 网球大满贯（event 标题常见词）
+    "roland garros", "french open", "wimbledon", "australian open", "us open",
+    "atp", "wta", "grand slam",
+    # 其他主要赛事
+    "world cup", "olympics", "copa america", "euro", "champions league",
+    "premier league", "la liga", "bundesliga", "serie a", "ligue 1",
+    "super bowl", "world series", "stanley cup", "playoffs",
+]
 
 # BTC 短周期 series 列表
 # timestamp 型: slug 格式为 {prefix}-{unix_ts}，可直接构造查询
