@@ -194,14 +194,22 @@ async def btc_predict(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """BTC 短周期预测：本地技术分析 + AI 综合判断"""
-    from app.services.btc_signal import analyze_btc_signal, build_llm_prompt
+    """BTC 短周期预测：本地技术分析 + Binance数据 + AI 综合判断"""
+    from app.services.btc_signal import analyze_btc_signal
+    from app.services.binance import binance_api
     from app.services.ai_service import get_active_ai_config, analyze
 
-    # 1. 本地技术分析
+    # 1. 本地技术分析（Polymarket 动量模型）
     signal = await analyze_btc_signal(horizon_minutes)
 
-    # 2. 本地结构化决策
+    # 2. Binance 技术指标（RSI, EMA, MACD, 布林带等）
+    binance_indicators = {}
+    try:
+        binance_indicators = await binance_api.get_market_indicator("BTCUSDT")
+    except Exception as e:
+        binance_indicators = {"error": f"Binance数据获取失败: {e}"}
+
+    # 3. 本地结构化决策
     prob_up = signal["prob_up"]
     prob_down = signal["prob_down"]
     confidence_value = signal["confidence_value"]
@@ -218,23 +226,47 @@ async def btc_predict(
         local_action = "买DOWN"
         local_edge = f"DOWN概率高于买价约 {down_edge * 100:.1f}%"
 
-    # 3. AI 综合分析
+    # 4. AI 综合分析
     ai_result = ""
     try:
         config = await get_active_ai_config(db, ai_config_id)
-        market_info = {
-            "question": market_question,
-            "period": f"{horizon_minutes}m",
-            "up_price": up_price,
-            "down_price": down_price,
-        }
-        prompt = build_llm_prompt(signal, market_info)
-        ai_result = await analyze(config, prompt)
+
+        # 构建增强的prompt
+        enhanced_prompt = f"""你是 BTC 短周期预测专家。请综合分析以下数据源，给出精准的交易建议。
+
+## 数据源1：本地技术分析（{horizon_minutes}分钟周期）
+{signal}
+
+## 数据源2：Binance实时技术指标
+{binance_indicators}
+
+## 数据源3：市场信息
+- 市场问题：{market_question}
+- 时间周期：{horizon_minutes}分钟
+- 当前UP价格：${up_price}
+- 当前DOWN价格：${down_price}
+
+## 本地信号分析
+- UP概率：{prob_up:.1%} vs UP买价：{up_price:.1%}，边际：{up_edge:.1%}
+- DOWN概率：{prob_down:.1%} vs DOWN买价：{down_price:.1%}，边际：{down_edge:.1%}
+
+## 分析要求
+请综合以上数据，输出：
+1. **短期趋势判断**（看涨/看跌/震荡，置信度）
+2. **概率预测**（上涨/下跌百分比）
+3. **关键价位**（支撑位、阻力位）
+4. **交易建议**（做多/做空/观望，含入场价、止损价、目标价）
+5. **风险提示**
+
+使用清晰的 markdown 格式输出。"""
+
+        ai_result = await analyze(config, enhanced_prompt)
     except Exception as e:
         ai_result = f"AI 分析失败: {e}"
 
     return {
         "signal": signal,
+        "binance": binance_indicators,
         "local": {
             "action": local_action,
             "edge": local_edge,

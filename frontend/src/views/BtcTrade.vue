@@ -191,6 +191,85 @@
             </div>
           </div>
 
+          <!-- Binance 技术指标 -->
+          <div v-if="binanceData && !binanceData.error" style="margin-top:12px;border-top:1px solid #eee;padding-top:10px">
+            <div style="font-weight:bold;margin-bottom:8px">📊 Binance 实时指标</div>
+
+            <!-- 价格和涨跌 -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div>
+                <span style="font-size:18px;font-weight:bold">${{ binanceData.current_price?.toLocaleString() }}</span>
+                <span :style="{ color: binanceData.price_change_24h >= 0 ? '#67c23a' : '#f56c6c', marginLeft: '8px' }">
+                  {{ binanceData.price_change_24h >= 0 ? '+' : '' }}{{ binanceData.price_change_24h?.toFixed(2) }}%
+                </span>
+              </div>
+            </div>
+
+            <!-- RSI -->
+            <div style="margin-bottom:6px">
+              <span style="font-size:12px;color:#999">RSI (15m/1h): </span>
+              <span style="font-weight:bold" :style="{ color: binanceData.rsi_15m > 70 ? '#f56c6c' : binanceData.rsi_15m < 30 ? '#67c23a' : '#409eff' }">
+                {{ binanceData.rsi_15m?.toFixed(1) }}
+              </span>
+              <span style="margin:0 8px;color:#ddd">|</span>
+              <span style="font-weight:bold" :style="{ color: binanceData.rsi_1h > 70 ? '#f56c6c' : binanceData.rsi_1h < 30 ? '#67c23a' : '#409eff' }">
+                {{ binanceData.rsi_1h?.toFixed(1) }}
+              </span>
+            </div>
+
+            <!-- EMA 排列 -->
+            <div style="font-size:12px;margin-bottom:6px">
+              <span style="color:#999">EMA 15m: </span>
+              <span :style="{ color: (binanceData.ema_9_15m || 0) > (binanceData.ema_21_15m || 0) ? '#67c23a' : '#f56c6c' }">
+                {{ binanceData.ema_9_15m > binanceData.ema_21_15m ? '多头' : '空头' }}
+              </span>
+              <span style="margin-left:12px;color:#999">1h: </span>
+              <span :style="{ color: (binanceData.ema_9_1h || 0) > (binanceData.ema_21_1h || 0) ? '#67c23a' : '#f56c6c' }">
+                {{ binanceData.ema_9_1h > binanceData.ema_21_1h ? '多头' : '空头' }}
+              </span>
+            </div>
+
+            <!-- MACD -->
+            <div v-if="binanceData.macd_15m" style="font-size:12px;margin-bottom:6px">
+              <span style="color:#999">MACD 15m: </span>
+              <span :style="{ color: binanceData.macd_15m.histogram > 0 ? '#67c23a' : '#f56c6c' }">
+                {{ binanceData.macd_15m.histogram > 0 ? '金叉' : '死叉' }}
+              </span>
+              <span style="margin-left:8px">({{ binanceData.macd_15m.histogram?.toFixed(2) }})</span>
+            </div>
+
+            <!-- 布林带 -->
+            <div v-if="binanceData.bollinger_15m" style="font-size:12px;margin-bottom:6px">
+              <span style="color:#999">布林带 15m: </span>
+              <span>${{ binanceData.bollinger_15m.lower?.toLocaleString() }}</span>
+              <span style="margin:0 4px">-</span>
+              <span>${{ binanceData.bollinger_15m.upper?.toLocaleString() }}</span>
+              <span style="margin-left:8px;color:#999">带宽:</span>
+              <span>{{ binanceData.bollinger_15m.bandwidth?.toFixed(2) }}%</span>
+            </div>
+
+            <!-- 成交量 -->
+            <div style="font-size:12px;margin-bottom:6px">
+              <span style="color:#999">成交量比 (15m): </span>
+              <span :style="{ color: binanceData.volume_ratio_15m > 1.5 ? '#e6a23c' : '#909399' }">
+                {{ binanceData.volume_ratio_15m?.toFixed(2) }}x
+              </span>
+            </div>
+
+            <!-- 支撑阻力 -->
+            <div style="font-size:12px">
+              <span style="color:#999">近期区间: </span>
+              <span style="color:#67c23a">${{ binanceData.recent_low?.toLocaleString() }}</span>
+              <span style="margin:0 4px">-</span>
+              <span style="color:#f56c6c">${{ binanceData.recent_high?.toLocaleString() }}</span>
+            </div>
+          </div>
+
+          <!-- Binance 错误 -->
+          <div v-if="binanceData?.error" style="margin-top:8px;padding:6px;background:#fef0f0;border-radius:4px;font-size:12px;color:#f56c6c">
+            {{ binanceData.error }}
+          </div>
+
           <!-- AI 分析 -->
           <div v-if="aiPrediction" style="margin-top:12px;border-top:1px solid #eee;padding-top:10px">
             <div style="font-weight:bold;margin-bottom:6px">AI 综合分析</div>
@@ -229,6 +308,7 @@ const aiConfigId = ref<number | null>(null)
 const predicting = ref(false)
 const prediction = ref('')
 const signalData = ref<any>(null)
+const binanceData = ref<any>(null)
 const localAction = ref('')
 const localEdge = ref('')
 const aiPrediction = ref('')
@@ -493,6 +573,7 @@ async function runPredict() {
   if (!aiConfigId.value) return
   predicting.value = true
   signalData.value = null
+  binanceData.value = null
   localAction.value = ''
   localEdge.value = ''
   aiPrediction.value = ''
@@ -517,10 +598,11 @@ async function runPredict() {
       down_price: downPrice,
     })
     signalData.value = data.signal
+    binanceData.value = data.binance
     localAction.value = data.local.action
     localEdge.value = data.local.edge ? `(${data.local.edge})` : ''
     aiPrediction.value = data.ai
-  } catch {} finally { predicting.value = false }
+  } catch (err: any) { ElMessage.error('预测失败') } finally { predicting.value = false }
 }
 
 async function loadPortfolio() {
