@@ -258,11 +258,14 @@ async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_v
 async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
     """扫描新创建的政治类市场（只返回未过期的）"""
     now = datetime.now(timezone.utc)
-    events = await gamma_api.get_events(order="start_date", ascending=False, limit=100)
+    recent_cutoff = now - timedelta(days=14)  # 只保留最近 14 天创建的市场
+
+    # P0 #23: 按 createDate 排序，优先返回最新创建的市场；增加 limit 到 200
+    events = await gamma_api.get_events(order="createDate", ascending=False, limit=200)
 
     results = []
     for event in events:
-        # 过滤已过期事件
+        # P0 #23: 过滤已过期事件
         end_str = event.get("endDate") or event.get("endDateIso") or ""
         if end_str:
             try:
@@ -273,6 +276,17 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
                     continue
             except (ValueError, TypeError):
                 pass
+
+        # P0 #23: 按创建时间过滤，排除老市场（超过 14 天没更新视为老市场）
+        created_str = event.get("createdAt") or ""
+        try:
+            created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            if created < recent_cutoff:
+                continue
+        except (ValueError, TypeError):
+            pass
 
         title = (event.get("title") or "").lower()
         tags = [str(t).lower() for t in (event.get("tags") or [])]
@@ -286,6 +300,7 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
         if any(kw in combined for kw in CHINA_KEYWORDS):
             continue
 
+        # P0 #23: 至少有一个市场有成交量，才算新市场
         markets_info = []
         for m in event.get("markets", []):
             # 过滤单个 market 已过期
@@ -431,10 +446,11 @@ async def _scan_sports_markets_inner(db: AsyncSession) -> list[dict]:
     from datetime import timedelta
 
     now = datetime.now(timezone.utc)
-    soon = now + timedelta(hours=48)  # 48 小时内到期的比赛
+    # 延长到 14 天，覆盖大满贯等长周期赛事（法网/温网等持续 2 周）
+    soon = now + timedelta(days=14)
 
-    # 1. 扫描 events（冠军/季后赛等长期市场）
-    events = await gamma_api.get_events(order="volume_24hr", ascending=False, limit=100)
+    # 1. 扫描 events（冠军/季后赛等长期市场），增加到 200 个
+    events = await gamma_api.get_events(order="volume_24hr", ascending=False, limit=200)
 
     results = []
     seen_slugs = set()
@@ -508,11 +524,17 @@ async def _scan_sports_markets_inner(db: AsyncSession) -> list[dict]:
     # 2. 用 offset 分页扫描单场比赛 markets（72h 内到期）
     GAME_KW = ["vs", "matchup", "beat", "points", "spread", "handicap",
                 "o/u", "over/under", "completed match", "map winner",
-                "game handicap", "set 1", "first set"]
+                "game handicap", "set 1", "first set", "game 1",
+                "match winner", "to win", "winner"]
     GAME_SPORT_KW = SPORTS_KEYWORDS + [
         "esports", "lol", "dota", "cs2", "counter-strike", "valorant",
         "overwatch", "rocket league", "mobile legends", "mlbb",
         "atp", "wta", "roland garros", "legends cricket",
+        # 新增：网球大满贯
+        "french open", "australian open", "wimbledon", "us open tennis",
+        "grand slam", "atp 1000", "wta 1000", "atp 500", "wta 500",
+        # 新增：其他赛事
+        "olympics", "paris 2024", "world cup", "copa america", "euro 2024"
     ]
 
     async def fetch_game_markets():
