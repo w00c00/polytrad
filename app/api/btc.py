@@ -226,41 +226,24 @@ async def btc_predict(
         local_action = "买DOWN"
         local_edge = f"DOWN概率高于买价约 {down_edge * 100:.1f}%"
 
-    # 4. AI 综合分析
+    # 4. AI 综合分析（使用加密货币专用 prompt）
     ai_result = ""
     try:
         config = await get_active_ai_config(db, ai_config_id)
 
-        # 构建增强的prompt
-        enhanced_prompt = f"""你是 BTC 短周期预测专家。请综合分析以下数据源，给出精准的交易建议。
+        # 构建加密货币专用分析 prompt
+        market_info = {
+            "horizon_minutes": horizon_minutes,
+            "question": market_question,
+            "up_price": up_price,
+            "down_price": down_price,
+        }
 
-## 数据源1：本地技术分析（{horizon_minutes}分钟周期）
-{signal}
+        from app.services.ai_service import build_crypto_prompt, CRYPTO_ANALYSIS_PROMPT
+        enhanced_prompt = build_crypto_prompt(signal, binance_indicators, market_info)
 
-## 数据源2：Binance实时技术指标
-{binance_indicators}
-
-## 数据源3：市场信息
-- 市场问题：{market_question}
-- 时间周期：{horizon_minutes}分钟
-- 当前UP价格：${up_price}
-- 当前DOWN价格：${down_price}
-
-## 本地信号分析
-- UP概率：{prob_up:.1%} vs UP买价：{up_price:.1%}，边际：{up_edge:.1%}
-- DOWN概率：{prob_down:.1%} vs DOWN买价：{down_price:.1%}，边际：{down_edge:.1%}
-
-## 分析要求
-请综合以上数据，输出：
-1. **短期趋势判断**（看涨/看跌/震荡，置信度）
-2. **概率预测**（上涨/下跌百分比）
-3. **关键价位**（支撑位、阻力位）
-4. **交易建议**（做多/做空/观望，含入场价、止损价、目标价）
-5. **风险提示**
-
-使用清晰的 markdown 格式输出。"""
-
-        ai_result = await analyze(config, enhanced_prompt)
+        # 传入加密货币专用 system prompt
+        ai_result = await analyze(config, enhanced_prompt, system_prompt=CRYPTO_ANALYSIS_PROMPT)
     except Exception as e:
         ai_result = f"AI 分析失败: {e}"
 
