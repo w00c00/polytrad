@@ -44,7 +44,7 @@
             </el-table-column>
             <el-table-column label="操作" width="100">
               <template #default="{ row }">
-                <el-button size="small" type="success" @click="quickBuy(row)">买YES</el-button>
+                <el-button size="small" type="primary" @click="selectMarket(row)">选择</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -55,10 +55,13 @@
         <el-card>
           <template #header>快速下单</template>
           <el-form label-position="top" size="small">
+            <el-form-item label="已选市场">
+              <div style="font-size:12px;color:#666">{{ selectedMarketObj?.question_zh || selectedMarketObj?.question || '未选择' }}</div>
+            </el-form-item>
             <el-form-item label="方向">
-              <el-radio-group v-model="form.side">
-                <el-radio-button value="BUY">YES</el-radio-button>
-                <el-radio-button value="SELL">NO</el-radio-button>
+              <el-radio-group v-model="form.direction">
+                <el-radio-button value="YES">YES</el-radio-button>
+                <el-radio-button value="NO">NO</el-radio-button>
               </el-radio-group>
             </el-form-item>
             <el-form-item label="金额 ($)">
@@ -106,7 +109,8 @@ const filteredEvents = computed(() => {
 const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const prediction = ref('')
-const form = reactive({ side: 'BUY', amount: 10, tokenId: '', price: 0.5 })
+const form = reactive({ direction: 'YES', amount: 10 })
+let selectedMarketObj: any = null
 
 async function loadEvents() {
   loading.value = true
@@ -121,13 +125,13 @@ function selectEvent(row: any) {
   prediction.value = ''
 }
 
-function quickBuy(row: any) {
-  if (row.token_ids?.length > 0) {
-    form.tokenId = row.token_ids[0]
-    form.side = 'BUY'
-    form.price = row.yes_price || 0.5
-    ElMessage.success(`已选择: ${row.question_zh || row.question}`)
+function selectMarket(row: any) {
+  if (!row.token_ids?.length) {
+    ElMessage.warning('该市场缺少 token 信息')
+    return
   }
+  selectedMarketObj = row
+  ElMessage.success(`已选择: ${row.question_zh || row.question}`)
 }
 
 function explainOrderError(msg: string): string {
@@ -146,12 +150,29 @@ function explainOrderError(msg: string): string {
 }
 
 async function placeOrder() {
-  if (!form.tokenId) { ElMessage.warning('请先点击买YES选择市场'); return }
+  // P0 #2: 根据 direction (YES/NO) 正确选择 token_id，side 统一 BUY
+  // YES → token_ids[0], NO → token_ids[1]
+  if (!selectedMarketObj || !selectedMarketObj.token_ids?.length) {
+    ElMessage.warning('请先点击"选择"按钮选中市场')
+    return
+  }
+  const tokens = selectedMarketObj.token_ids
+  const tokenId = form.direction === 'NO' ? tokens[1] : tokens[0]
+  if (!tokenId) {
+    ElMessage.warning('该市场缺少对应方向的 token')
+    return
+  }
   ordering.value = true
   try {
-    const resp = await sportsApi.order({ token_id: form.tokenId, side: form.side, order_type: 'GTC', usdc_amount: form.amount })
+    const resp = await sportsApi.order({
+      token_id: tokenId,
+      side: 'BUY',
+      order_type: 'GTC',
+      tick_size: selectedMarketObj.tick_size || '0.01',
+      usdc_amount: form.amount,
+    })
     const d = resp.data
-    ElMessage.success(`下单成功: $${form.amount} → ${d.size} 份 @ $${d.price}`)
+    ElMessage.success(`买入 ${form.direction} 成功: $${form.amount} → ${d.size} 份 @ $${d.price}`)
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error({ message: `下单失败: ${explainOrderError(String(raw))}`, duration: 5000 })

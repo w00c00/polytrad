@@ -367,6 +367,8 @@ function onTabChange() {
   if (activeTab.value !== 'other') {
     currentMarket.value = null
   }
+  // P2 #13: 切 tab 时重置下单方向，避免用旧选择在新市场误操作
+  orderForm.direction = 'UP'
 }
 
 function explainOrderError(msg: string): string {
@@ -474,16 +476,9 @@ async function quickSell(p: any) {
   if (size <= 0) { ElMessage.warning('持仓数量为 0'); return }
   sellingAsset.value = tokenId
   try {
-    // 用盘口价卖出（取 bid 价）
-    const price = yesPrice.value > 0 ? Math.round(yesPrice.value * 100) / 100 : 0.01
-    await btcApi.order({
-      token_id: tokenId,
-      price,
-      size,
-      side: 'SELL',
-      order_type: 'GTC',
-      tick_size: '0.01',
-    })
+    // P0 #1: 卖出持仓走专用 sell-position 接口，后端读 CLOB best bid 定价，避免前端用错价
+    const resp = await btcApi.sell({ token_id: tokenId, size })
+    const price = resp.data?.price ?? 0
     ElMessage.success(`挂卖单成功: ${size} 份 @ $${price.toFixed(3)} ≈ $${(size * price).toFixed(2)}`)
     loadOrders()
   } catch (err: any) {

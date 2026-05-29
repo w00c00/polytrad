@@ -23,13 +23,25 @@ def to_beijing_time(iso_str: str | None) -> str | None:
 
 
 def _et_to_bj_time(time_str: str) -> str:
-    """将美东时间字符串 (如 '6:30PM') 转为北京时间 24 小时制"""
+    """将美东时间字符串 (如 '6:30PM') 转为北京时间 24 小时制
+
+    P1 #10: 修复时区硬编码问题
+    EDT (夏令时, 3月-11月): UTC-4, 与北京时间差 12 小时
+    EST (冬令时, 11月-3月): UTC-5, 与北京时间差 13 小时
+    """
     try:
         from datetime import datetime
+        from zoneinfo import ZoneInfo
+
         t = datetime.strptime(time_str.strip(), "%I:%M%p")
-        # ET = UTC-4 (EDT) or UTC-5 (EST), 北京 = UTC+8, 差 12 或 13 小时
-        # 用 EDT (夏令时) 差 12 小时
-        h = (t.hour + 12) % 24
+        now_ny = datetime.now(ZoneInfo("America/New_York"))
+
+        # 判断当前是否为夏令时
+        # dst() 返回 daylight saving time offset，夏令时返回非零值
+        is_dst = now_ny.dst() and now_ny.dst().total_seconds() > 0
+        offset_hours = 12 if is_dst else 13
+
+        h = (t.hour + offset_hours) % 24
         return f"{h:02d}:{t.minute:02d}"
     except (ValueError, TypeError):
         return time_str
@@ -249,11 +261,11 @@ class GammaAPI:
         return markets[0] if markets else None
 
     async def search(self, query: str) -> list[dict]:
-        """通过 events + markets 过滤实现搜索（/search 端点已下线）"""
+        """通过 events + markets 过滤实现搜索（/search 端点已下线）- P3 #17: limit 提到 500"""
         keywords = query.lower().split()
         results = []
         for ep in ["/events", "/markets"]:
-            resp = await self.client.get(f"{self.base}{ep}", params={"active": "true", "closed": "false", "limit": 100})
+            resp = await self.client.get(f"{self.base}{ep}", params={"active": "true", "closed": "false", "limit": 500})
             if resp.status_code == 200:
                 for item in resp.json():
                     text = (item.get("title", "") + item.get("question", "") + item.get("slug", "")).lower()

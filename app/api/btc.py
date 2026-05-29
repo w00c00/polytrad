@@ -6,7 +6,7 @@ from app.models import User
 from app.deps import get_current_user
 from app.schemas import OrderReq, MarketOrderReq, SellReq, CancelOrderReq
 from app.services.polymarket import gamma_api, clob_api, to_beijing_time, translate_title
-from app.services.trading import place_limit_order, place_market_order, cancel_order, get_open_orders, cancel_all_orders, get_usdc_balance
+from app.services.trading import place_limit_order, place_market_order, sell_position, cancel_order, get_open_orders, cancel_all_orders, get_usdc_balance
 from app.services.scanner import scan_btc_short_markets
 
 router = APIRouter(prefix="/api/btc", tags=["BTC短周期"])
@@ -94,14 +94,15 @@ async def btc_market_order(req: MarketOrderReq, user: User = Depends(get_current
 
 @router.post("/sell")
 async def btc_sell(req: SellReq, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """快速卖出"""
+    """卖出持仓：自动读 CLOB best bid 并 clamp（避免前端用错价格）"""
     try:
-        result = await place_market_order(
+        result = await sell_position(
             user, db,
             token_id=req.token_id,
-            amount=req.amount,
-            side="SELL",
-            order_type=req.order_type,
+            size=req.size,
+            tick_size=req.tick_size,
+            market_slug=req.market_slug,
+            condition_id=req.condition_id,
         )
         return result
     except Exception as e:

@@ -66,9 +66,12 @@ class MarketOrderReq(BaseModel):
 
 
 class SellReq(BaseModel):
+    """卖出持仓：后端自动从 CLOB 读 best bid 并 clamp"""
     token_id: str
-    amount: float
-    order_type: str = "FOK"
+    size: float
+    tick_size: str = "0.01"
+    market_slug: str = ""
+    condition_id: str = ""
 
 
 class CancelOrderReq(BaseModel):

@@ -251,6 +251,22 @@ async def job_cleanup_scan_results():
         logger.info("已清理过期扫描结果")
 
 
+async def job_sync_order_status():
+    """P1 #9: 同步本地订单状态到 CLOB（每3分钟）"""
+    async with SessionLocal() as db:
+        from app.services.trading import sync_order_status
+        users = (await db.execute(select(User).where(User.status == "approved"))).scalars().all()
+        total_filled = 0
+        for user in users:
+            try:
+                filled_count = await sync_order_status(user, db)
+                total_filled += filled_count
+            except Exception as e:
+                logger.error(f"同步订单状态失败 user={user.id}: {e}")
+        if total_filled > 0:
+            logger.info(f"订单状态同步完成，{total_filled} 个订单已成交")
+
+
 def start_scheduler():
     """启动定时任务"""
     scheduler.add_job(job_hot_scan, "interval", hours=2, id="hot_scan", replace_existing=True)
@@ -258,6 +274,8 @@ def start_scheduler():
     scheduler.add_job(job_arbitrage_scan, "interval", hours=2, id="arbitrage_scan", replace_existing=True)
     scheduler.add_job(job_position_report, "cron", hour=0, id="position_report", replace_existing=True)
     scheduler.add_job(job_cleanup_scan_results, "cron", hour=3, id="cleanup_scan", replace_existing=True)
+    # P1 #9: 每3分钟同步本地订单状态
+    scheduler.add_job(job_sync_order_status, "interval", minutes=3, id="sync_order_status", replace_existing=True)
     scheduler.start()
     logger.info("定时任务已启动")
 

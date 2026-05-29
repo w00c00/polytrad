@@ -1,11 +1,30 @@
 import json
 import logging
+import asyncio
+import time
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.polymarket import gamma_api, clob_api, to_beijing_time, translate_title
 from app.models import ScanResult
 
 logger = logging.getLogger(__name__)
+
+# P3 #18: 扫描结果缓存（避免重复点击重复请求 API）
+_scan_cache: dict[str, tuple[float, list]] = {}
+_CACHE_TTL_SECONDS = 120  # 2 分钟
+
+
+async def _cached_scan(key: str, scan_func, *args, **kwargs) -> list:
+    """带内存缓存的扫描包装"""
+    now = time.time()
+    if key in _scan_cache:
+        ts, data = _scan_cache[key]
+        if now - ts < _CACHE_TTL_SECONDS:
+            logger.debug(f"scan cache hit: {key}")
+            return data
+    data = await scan_func(*args, **kwargs)
+    _scan_cache[key] = (now, data)
+    return data
 
 # Polymarket 政治相关 tag 的常见 slug 片段
 POLITICAL_KEYWORDS = ["politic", "election", "president", "congress", "senate", "governor", "democrat", "republican", "trump", "biden"]
@@ -51,17 +70,21 @@ def _extract_market_info(event: dict) -> list[dict]:
 
 async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
     """扫描 BTC 短周期市场 (5m/15m/4h/1h/1d)"""
-    import asyncio
+    # P3 #18: 2 分钟缓存
+    return await _cached_scan("btc_short", _scan_btc_short_markets_inner, db)
+
+
+async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
     now_ts = int(datetime.now(timezone.utc).timestamp())
     now = datetime.now(timezone.utc)
 
-    # 1. timestamp 型 series: 只查当前和未来的周期
+    # 1. timestamp 型 series: 只查当前和未来的 3 个周期（P1 #7：从 6 减到 3，减少 API 调用）
     slugs = []
     for series_info in BTC_TIMESTAMP_SERIES:
         interval = series_info["interval"]
         prefix = series_info["prefix"]
         current_end = (now_ts // interval) * interval
-        for offset in range(0, 6):
+        for offset in range(0, 3):
             ts = current_end + offset * interval
             slugs.append((f"{prefix}-{ts}", series_info["label"]))
 
@@ -153,7 +176,7 @@ async def scan_btc_short_markets(db: AsyncSession | None) -> list[dict]:
     return results
 
 
-async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_volume: float = 100) -> list[dict]:
+async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_volume: float = 5000) -> list[dict]:
     """扫描即将到期的热门市场（从 markets 端点分页获取）"""
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=hours_until_expiry)
@@ -311,9 +334,22 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
 
 
 async def scan_arbitrage(db: AsyncSession, threshold: float = 0.03) -> list[dict]:
-    """扫描事件套利机会 (negRisk 多 market 事件的 YES 价格之和偏离 1.0)"""
+    """扫描事件套利机会 - P2 #14: 分页取 500 个 events，避免漏掉偏差大的机会"""
     now = datetime.now(timezone.utc)
-    events = await gamma_api.get_events(active=True, closed=False, limit=100)
+    events = []
+    for offset in range(0, 500, 100):
+        try:
+            resp = await gamma_api.client.get(f"{gamma_api.base}/events", params={
+                "active": "true", "closed": "false",
+                "limit": 100, "offset": offset,
+            })
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            events.extend(batch)
+        except Exception:
+            break
 
     results = []
     for event in events:
@@ -387,8 +423,11 @@ async def scan_arbitrage(db: AsyncSession, threshold: float = 0.03) -> list[dict
 
 
 async def scan_sports_markets(db: AsyncSession) -> list[dict]:
-    """扫描体育赛事市场（含单场比赛）"""
-    import asyncio
+    """扫描体育赛事市场（含单场比赛）- P3 #18: 带 2 分钟缓存"""
+    return await _cached_scan("sports", _scan_sports_markets_inner, db)
+
+
+async def _scan_sports_markets_inner(db: AsyncSession) -> list[dict]:
     from datetime import timedelta
 
     now = datetime.now(timezone.utc)
@@ -414,7 +453,8 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
                 pass
 
         title = (event.get("title") or "").lower()
-        tags = [str(t).lower() for t in (event.get("tags") or []) if isinstance(t, dict)]
+        # P1 #5: Polymarket tags 是字符串列表，不是 dict，去掉错误的类型过滤
+        tags = [str(t).lower() for t in (event.get("tags") or [])]
         combined = title + " " + " ".join(tags)
 
         if not any(kw in combined for kw in SPORTS_KEYWORDS):

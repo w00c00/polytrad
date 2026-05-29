@@ -124,7 +124,10 @@ async function quickBuy(row: any) {
     })
     const d = resp.data
     ElMessage.success(`下单成功: $${orderAmount.value} → ${d.size} 份 @ $${d.price}`)
-  } catch {}
+  } catch (err: any) {
+    const raw = err?.response?.data?.detail || err?.message || '未知错误'
+    ElMessage.error({ message: `下单失败: ${raw}`, duration: 5000 })
+  }
 }
 
 async function runPredict() {
