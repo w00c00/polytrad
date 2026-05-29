@@ -503,10 +503,15 @@ async function runPredict() {
   aiPrediction.value = ''
 
   // 从选中的短周期市场提取信息
-  const horizon = activeTab.value === '5m' ? 5 : 15
+  const horizonMap: Record<string, number> = { '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440 }
+  const horizon = horizonMap[activeTab.value] || 15
   const question = currentMarket.value?.question || ''
-  const upPrice = yesPrice.value
-  const downPrice = noPrice.value
+  // 用中点价作为市场隐含概率，不用 best ask
+  const bestAsk = asks.value.length > 0 ? Math.min(...asks.value.map((a: any) => parseFloat(a.price))) : yesPrice.value
+  const bestBid = bids.value.length > 0 ? Math.max(...bids.value.map((b: any) => parseFloat(b.price))) : noPrice.value
+  const midPrice = Math.round(((bestAsk + bestBid) / 2) * 1000) / 1000
+  const upPrice = midPrice
+  const downPrice = 1 - midPrice
 
   try {
     const { data } = await btcApi.predict({
