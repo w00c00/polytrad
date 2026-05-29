@@ -233,11 +233,24 @@ async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_v
 
 
 async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
-    """扫描新创建的政治类市场"""
-    events = await gamma_api.get_events(order="start_date", ascending=False, limit=50)
+    """扫描新创建的政治类市场（只返回未过期的）"""
+    now = datetime.now(timezone.utc)
+    events = await gamma_api.get_events(order="start_date", ascending=False, limit=100)
 
     results = []
     for event in events:
+        # 过滤已过期事件
+        end_str = event.get("endDate") or event.get("endDateIso") or ""
+        if end_str:
+            try:
+                ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                if ed.tzinfo is None:
+                    ed = ed.replace(tzinfo=timezone.utc)
+                if ed < now:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         title = (event.get("title") or "").lower()
         tags = [str(t).lower() for t in (event.get("tags") or [])]
         desc = (event.get("description") or "").lower()
@@ -252,6 +265,18 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
 
         markets_info = []
         for m in event.get("markets", []):
+            # 过滤单个 market 已过期
+            m_end = m.get("endDate") or m.get("endDateIso") or ""
+            if m_end:
+                try:
+                    med = datetime.fromisoformat(m_end.replace("Z", "+00:00"))
+                    if med.tzinfo is None:
+                        med = med.replace(tzinfo=timezone.utc)
+                    if med < now:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
             prices = m.get("outcomePrices", '["0.5","0.5"]')
             if isinstance(prices, str):
                 prices = json.loads(prices)
@@ -266,6 +291,9 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
                 "neg_risk": m.get("negRisk", False),
                 "tick_size": m.get("minimumTickSize", "0.01"),
             })
+
+        if not markets_info:
+            continue
 
         results.append({
             "event_slug": event.get("slug", ""),
@@ -284,10 +312,23 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
 
 async def scan_arbitrage(db: AsyncSession, threshold: float = 0.03) -> list[dict]:
     """扫描事件套利机会 (negRisk 多 market 事件的 YES 价格之和偏离 1.0)"""
+    now = datetime.now(timezone.utc)
     events = await gamma_api.get_events(active=True, closed=False, limit=100)
 
     results = []
     for event in events:
+        # 过滤已过期
+        end_str = event.get("endDate") or event.get("endDateIso") or ""
+        if end_str:
+            try:
+                ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                if ed.tzinfo is None:
+                    ed = ed.replace(tzinfo=timezone.utc)
+                if ed < now:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         # 排除中国相关内容
         title_lower = (event.get("title") or "").lower()
         if any(kw in title_lower for kw in CHINA_KEYWORDS):
@@ -360,6 +401,18 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
     seen_slugs = set()
 
     for event in events:
+        # 过滤已过期
+        end_str = event.get("endDate") or event.get("endDateIso") or ""
+        if end_str:
+            try:
+                ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                if ed.tzinfo is None:
+                    ed = ed.replace(tzinfo=timezone.utc)
+                if ed < now:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         title = (event.get("title") or "").lower()
         tags = [str(t).lower() for t in (event.get("tags") or []) if isinstance(t, dict)]
         combined = title + " " + " ".join(tags)
@@ -369,6 +422,18 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
 
         markets_info = []
         for m in event.get("markets", []):
+            # 过滤单个 market 已过期
+            m_end = m.get("endDate") or m.get("endDateIso") or ""
+            if m_end:
+                try:
+                    med = datetime.fromisoformat(m_end.replace("Z", "+00:00"))
+                    if med.tzinfo is None:
+                        med = med.replace(tzinfo=timezone.utc)
+                    if med < now:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
             prices = m.get("outcomePrices", '["0.5","0.5"]')
             if isinstance(prices, str):
                 prices = json.loads(prices)
@@ -388,11 +453,14 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
                 "tick_size": m.get("minimumTickSize", "0.01"),
             })
 
+        if not markets_info:
+            continue
+
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
             "title_zh": translate_title(event.get("title", "")),
-            "end_date_bj": to_beijing_time(event.get("endDate") or event.get("endDateIso")),
+            "end_date_bj": to_beijing_time(end_str),
             "volume_24h": float(event.get("volume24hr") or 0),
             "markets": markets_info,
         })
@@ -429,14 +497,14 @@ async def scan_sports_markets(db: AsyncSession) -> list[dict]:
                     is_sport = any(kw in q for kw in GAME_SPORT_KW)
                     if not (is_game and is_sport):
                         continue
-                    # 72h 内到期
+                    # 72h 内到期，且未过期
                     end = m.get("endDate") or m.get("endDateIso") or ""
                     if end:
                         try:
                             ed = datetime.fromisoformat(end.replace("Z", "+00:00"))
                             if ed.tzinfo is None:
                                 ed = ed.replace(tzinfo=timezone.utc)
-                            if ed > soon:
+                            if ed < now or ed > soon:
                                 continue
                         except (ValueError, TypeError):
                             continue
