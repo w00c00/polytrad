@@ -271,8 +271,8 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(days=14)  # 只保留最近 14 天创建的市场
 
-    # P0 #23: 按 createDate 排序，优先返回最新创建的市场；增加 limit 到 200
-    events = await gamma_api.get_events(order="createDate", ascending=False, limit=200)
+    # P0 #23: 按成交量排序，客户端过滤 14 天内创建的市场；增加 limit 到 200
+    events = await gamma_api.get_events(order="volume_24hr", ascending=False, limit=200)
 
     results = []
     for event in events:
