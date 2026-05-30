@@ -103,6 +103,9 @@ async function placeOrder() {
       side: 'BUY',
       order_type: 'GTC',
       tick_size: m.tick_size || '0.01',
+      neg_risk: m.neg_risk || false,
+      market_slug: m.slug || '',
+      condition_id: m.condition_id || '',
       usdc_amount: amount.value,
     })
     ElMessage.success(`买入成功: $${amount.value} → ${data.size} 份 @ $${data.price}`)

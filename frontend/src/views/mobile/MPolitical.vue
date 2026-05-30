@@ -9,7 +9,7 @@
       <div v-else-if="events.length === 0" class="empty-hint">暂无新事件</div>
       <div v-for="e in events" :key="e.event_slug" class="card">
         <div class="card-title">{{ e.title_zh || e.title }}</div>
-        <div class="card-meta" v-if="e.start_date_bj">开始: {{ e.start_date_bj }}</div>
+        <div class="card-meta" v-if="e.created_at_bj || e.start_date_bj">创建: {{ e.created_at_bj || e.start_date_bj }}</div>
         <div class="market-list">
           <div v-for="m in e.markets" :key="m.slug" class="market-row" @click="buyMarket(m)">
             <span class="m-name">{{ m.question_zh || m.question }}</span>
@@ -27,11 +27,18 @@
         </div>
         <div class="sheet-body">
           <div class="field">
+            <label>方向</label>
+            <div class="dir-btns">
+              <button class="dir-btn up" :class="{ active: direction === 'YES' }" @click="direction = 'YES'">YES</button>
+              <button class="dir-btn down" :class="{ active: direction === 'NO' }" @click="direction = 'NO'">NO</button>
+            </div>
+          </div>
+          <div class="field">
             <label>金额 (USDC)</label>
             <input type="number" v-model.number="amount" min="1" class="input" />
           </div>
           <button class="submit-btn" :disabled="ordering" @click="placeOrder">
-            {{ ordering ? '下单中...' : '买入 YES' }}
+            {{ ordering ? '下单中...' : `买入 ${direction}` }}
           </button>
         </div>
       </div>
@@ -50,6 +57,7 @@ const showSheet = ref(false)
 const selectedMarket = ref<any>(null)
 const amount = ref(10)
 const ordering = ref(false)
+const direction = ref('YES')
 
 async function loadData() {
   loading.value = true
@@ -67,16 +75,21 @@ function buyMarket(m: any) {
 async function placeOrder() {
   const m = selectedMarket.value
   if (!m?.token_ids?.length) { ElMessage.warning('缺少 token'); return }
+  const tokenId = direction.value === 'NO' ? m.token_ids[1] : m.token_ids[0]
+  if (!tokenId) { ElMessage.warning('缺少对应方向 token'); return }
   ordering.value = true
   try {
     const { data } = await politicalApi.order({
-      token_id: m.token_ids[0],
+      token_id: tokenId,
       side: 'BUY',
       order_type: 'GTC',
       tick_size: m.tick_size || '0.01',
+      neg_risk: m.neg_risk || false,
+      market_slug: m.slug || '',
+      condition_id: m.condition_id || '',
       usdc_amount: amount.value,
     })
-    ElMessage.success(`买入成功: $${amount.value} → ${data.size} 份 @ $${data.price}`)
+    ElMessage.success(`买入 ${direction.value} 成功: $${amount.value} → ${data.size} 份 @ $${data.price}`)
     showSheet.value = false
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || err?.message || '下单失败')
@@ -108,6 +121,10 @@ onMounted(loadData)
 .sheet-close { font-size: 20px; color: #909399; cursor: pointer; }
 .sheet-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 .field label { display: block; font-size: 13px; color: #606266; margin-bottom: 6px; }
+.dir-btns { display: flex; gap: 8px; }
+.dir-btn { flex: 1; padding: 12px; border: 2px solid #dcdfe6; border-radius: 8px; background: #fff; font-size: 14px; font-weight: bold; cursor: pointer; }
+.dir-btn.up.active { border-color: #67c23a; background: #f0f9eb; color: #67c23a; }
+.dir-btn.down.active { border-color: #f56c6c; background: #fef0f0; color: #f56c6c; }
 .input { width: 100%; padding: 12px; border: 1px solid #dcdfe6; border-radius: 8px; font-size: 16px; box-sizing: border-box; outline: none; }
 .input:focus { border-color: #409eff; }
 .submit-btn { width: 100%; padding: 14px; background: #409eff; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }

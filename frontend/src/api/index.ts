@@ -102,6 +102,18 @@ export const arbitrageApi = {
   execute: (data: any) => api.post('/arbitrage/execute', null, { params: data }),
 }
 
+// Opportunity scanners
+export const opportunityApi = {
+  slippage: (params?: any) => api.get('/opportunities/slippage', { params }),
+  crossEvent: (params?: any) => api.get('/opportunities/cross-event', { params }),
+  rewards: (params?: any) => api.get('/opportunities/rewards', { params }),
+  resolutionWatch: (params?: any) => api.get('/opportunities/resolution-watch', { params }),
+  basketPrecheck: (params: any) => api.get('/opportunities/basket-precheck', { params }),
+  btcAlerts: (params?: any) => api.get('/opportunities/btc-alerts', { params }),
+  notifyBtcAlerts: (params?: any) => api.post('/opportunities/btc-alerts/notify', null, { params }),
+  hedges: () => api.get('/opportunities/hedges'),
+}
+
 // AI
 export const aiApi = {
   providers: () => api.get('/ai/providers'),

@@ -23,6 +23,8 @@ _AssetType = None
 
 # CLOB 调用默认超时 (秒)
 CLOB_TIMEOUT = 25
+VALID_SIDES = {"BUY", "SELL"}
+VALID_ORDER_TYPES = {"GTC", "FOK", "FAK", "GTD"}
 
 
 def _load_clob_libs():
@@ -117,6 +119,83 @@ def _clamp_price(price: float, tick_size: str) -> float:
     return round(min(max(price, tick), 1.0 - tick), decimals)
 
 
+def _clob_order_id(resp) -> str | None:
+    if isinstance(resp, dict):
+        return resp.get("orderID") or resp.get("orderId") or resp.get("id")
+    return getattr(resp, "orderID", None) or getattr(resp, "orderId", None) or getattr(resp, "id", None)
+
+
+def _ensure_clob_success(resp, action: str) -> None:
+    if not isinstance(resp, dict):
+        return
+    if resp.get("success") is False or resp.get("error") or resp.get("message") == "error":
+        detail = resp.get("error") or resp.get("message") or resp
+        raise ValueError(f"{action}失败: {detail}")
+
+
+def _validate_order(side: str, order_type: str, price: float, size: float, usdc_amount: float) -> tuple[str, str]:
+    side = side.upper()
+    order_type = order_type.upper()
+    if side not in VALID_SIDES:
+        raise ValueError("side 必须是 BUY 或 SELL")
+    if order_type not in VALID_ORDER_TYPES:
+        raise ValueError("order_type 必须是 GTC、FOK、FAK 或 GTD")
+    if usdc_amount <= 0:
+        if price <= 0 or price >= 1:
+            raise ValueError("限价单价格必须在 0 到 1 之间")
+        if size < 5:
+            raise ValueError("订单份额至少 5 份")
+    return side, order_type
+
+
+def _cancelled_ids(resp) -> set[str]:
+    if not isinstance(resp, dict):
+        return set()
+    ids = resp.get("canceled") or resp.get("cancelled") or resp.get("cancelled_orders") or resp.get("canceled_orders") or []
+    if isinstance(ids, str):
+        return {ids}
+    if isinstance(ids, list):
+        return {str(x.get("id") or x.get("orderID") or x) for x in ids}
+    return set()
+
+
+def _not_cancelled_ids(resp) -> set[str]:
+    if not isinstance(resp, dict):
+        return set()
+    ids = resp.get("not_canceled") or resp.get("not_cancelled") or resp.get("not_canceled_orders") or []
+    if isinstance(ids, str):
+        return {ids}
+    if isinstance(ids, list):
+        return {str(x.get("id") or x.get("orderID") or x) for x in ids}
+    return set()
+
+
+def _order_status_from_detail(order: dict, expected_size: float) -> tuple[str | None, float | None]:
+    status = str(order.get("status") or order.get("state") or "").lower()
+    filled_raw = (
+        order.get("filled_size")
+        or order.get("filledSize")
+        or order.get("size_matched")
+        or order.get("sizeMatched")
+    )
+    filled = None
+    if filled_raw is not None:
+        try:
+            filled = float(filled_raw)
+        except (TypeError, ValueError):
+            filled = None
+
+    if any(s in status for s in ("cancel", "canceled", "cancelled", "expired")):
+        return "cancelled", filled
+    if filled is not None and expected_size > 0 and filled >= expected_size - 1e-8:
+        return "filled", filled
+    if any(s in status for s in ("matched", "mined", "confirmed", "filled")):
+        return "filled", filled
+    if any(s in status for s in ("live", "open", "pending", "active")):
+        return "pending", filled
+    return None, filled
+
+
 def _best_price_from_book(book: dict, side: str) -> tuple[float | None, str]:
     """从订单簿获取 best ask (BUY) 或 best bid (SELL)，返回 (价格, tick_size)"""
     raw_levels = book.get("asks" if side == "BUY" else "bids", [])
@@ -150,15 +229,19 @@ async def place_limit_order(
     token_id: str, price: float, size: float,
     side: str, order_type: str = "GTC",
     tick_size: str = "0.01",
+    neg_risk: bool = False,
     market_slug: str = "", condition_id: str = "",
     usdc_amount: float = 0,
 ) -> dict:
     """下限价单。若传 usdc_amount > 0，则从 CLOB 实时读盘口价并自动计算 size"""
     _load_clob_libs()
+    side, order_type = _validate_order(side, order_type, price, size, usdc_amount)
     client = await get_clob_client(user, db)
 
     # 市价模式：从 CLOB 实时读盘口价
     if usdc_amount > 0:
+        if usdc_amount < 1:
+            raise ValueError("下单金额至少 1 USDC")
         orderbook = await _run_clob(client.get_order_book, token_id)
         book_dict = _orderbook_to_dict(orderbook)
         best_price, real_tick = _best_price_from_book(book_dict, side)
@@ -170,9 +253,11 @@ async def place_limit_order(
         if size < 5.0:
             raise ValueError(f"金额太小，按价格 {price:.4f} 至少需要 {price * 5:.2f} USDC")
         logger.info("实时盘口价: %s price=%.4f size=%.4f tick=%s", side, price, size, tick_size)
+    else:
+        price = _clamp_price(price, tick_size)
 
     side_const = _Side.BUY if side == "BUY" else _Side.SELL
-    otype = getattr(_OrderType, order_type, _OrderType.GTC)
+    otype = getattr(_OrderType, order_type)
 
     order_args = _OrderArgs(
         token_id=token_id,
@@ -180,9 +265,11 @@ async def place_limit_order(
         size=float(size),
         side=side_const,
     )
-    options = _PartialCreateOrderOptions(tick_size=tick_size)
+    options = _PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk)
 
     resp = await _run_clob(client.create_and_post_order, order_args, options=options, order_type=otype)
+    _ensure_clob_success(resp, "下单")
+    order_id = _clob_order_id(resp)
 
     trade = Trade(
         user_id=user.id,
@@ -194,7 +281,7 @@ async def place_limit_order(
         price=price,
         size=size,
         status="pending",
-        order_id=resp.get("orderID") if isinstance(resp, dict) else None,
+        order_id=order_id,
     )
     db.add(trade)
     await db.commit()
@@ -207,13 +294,17 @@ async def place_market_order(
     user: User, db: AsyncSession,
     token_id: str, amount: float, side: str,
     order_type: str = "FOK", market_slug: str = "", condition_id: str = "",
+    tick_size: str = "0.01", neg_risk: bool = False,
 ) -> dict:
     """下市价单 (按美元金额)，并尝试回填成交价"""
     _load_clob_libs()
+    side, order_type = _validate_order(side, order_type, price=0.5, size=5, usdc_amount=amount)
+    if amount <= 0:
+        raise ValueError("下单金额必须大于 0")
     client = await get_clob_client(user, db)
 
     side_const = _Side.BUY if side == "BUY" else _Side.SELL
-    otype = getattr(_OrderType, order_type, _OrderType.FOK)
+    otype = getattr(_OrderType, order_type)
 
     order = _MarketOrderArgs(
         token_id=token_id,
@@ -221,7 +312,9 @@ async def place_market_order(
         side=side_const,
         order_type=otype,
     )
-    resp = await _run_clob(client.create_and_post_market_order, order)
+    options = _PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk)
+    resp = await _run_clob(client.create_and_post_market_order, order, options=options, order_type=otype)
+    _ensure_clob_success(resp, "市价下单")
 
     # 尝试从响应或 CLOB 获取成交价
     filled_price = 0.0
@@ -242,6 +335,9 @@ async def place_market_order(
                 filled_price = float(last["price"])
         except Exception:
             pass
+    filled_size = amount
+    if side == "BUY" and filled_price > 0:
+        filled_size = amount / filled_price
 
     trade = Trade(
         user_id=user.id,
@@ -251,9 +347,9 @@ async def place_market_order(
         side=side,
         order_type=order_type,
         price=filled_price,
-        size=amount,
+        size=filled_size,
         status="filled",
-        order_id=resp.get("orderID") if isinstance(resp, dict) else None,
+        order_id=_clob_order_id(resp),
     )
     db.add(trade)
     await db.commit()
@@ -266,10 +362,13 @@ async def sell_position(
     user: User, db: AsyncSession,
     token_id: str, size: float,
     tick_size: str = "0.01",
+    neg_risk: bool = False,
     market_slug: str = "", condition_id: str = "",
 ) -> dict:
     """从 CLOB 实时读 best bid，挂卖出限价单"""
     _load_clob_libs()
+    if size < 5:
+        raise ValueError("卖出份额至少 5 份")
     client = await get_clob_client(user, db)
 
     orderbook = await _run_clob(client.get_order_book, token_id)
@@ -288,7 +387,7 @@ async def sell_position(
         size=float(size),
         side=side_const,
     )
-    options = _PartialCreateOrderOptions(tick_size=tick_size)
+    options = _PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk)
 
     resp = await _run_clob(
         client.create_and_post_order,
@@ -296,6 +395,8 @@ async def sell_position(
         options=options,
         order_type=_OrderType.GTC,
     )
+    _ensure_clob_success(resp, "卖出")
+    order_id = _clob_order_id(resp)
 
     trade = Trade(
         user_id=user.id,
@@ -307,7 +408,7 @@ async def sell_position(
         price=price,
         size=size,
         status="pending",
-        order_id=resp.get("orderID") if isinstance(resp, dict) else None,
+        order_id=order_id,
     )
     db.add(trade)
     await db.commit()
@@ -329,6 +430,14 @@ async def cancel_order(user: User, db: AsyncSession, order_id: str) -> dict:
     client = await get_clob_client(user, db)
     from py_clob_client_v2.clob_types import OrderPayload
     resp = await _run_clob(client.cancel_order, OrderPayload(orderID=order_id))
+    _ensure_clob_success(resp, "撤单")
+
+    cancelled = _cancelled_ids(resp)
+    not_cancelled = _not_cancelled_ids(resp)
+    if cancelled and order_id not in cancelled:
+        raise ValueError(f"订单未被取消: {resp}")
+    if order_id in not_cancelled:
+        raise ValueError(f"订单未被取消: {resp}")
 
     # 同步本地 Trade 表
     await db.execute(
@@ -350,13 +459,16 @@ async def cancel_all_orders(user: User, db: AsyncSession) -> dict:
     """撤销所有挂单，并同步本地 DB"""
     client = await get_clob_client(user, db)
     resp = await _run_clob(client.cancel_all)
+    _ensure_clob_success(resp, "全部撤单")
 
-    # 同步本地：将所有 pending 改为 cancelled
-    await db.execute(
-        sa_update(Trade).where(Trade.user_id == user.id, Trade.status == "pending")
-        .values(status="cancelled")
-    )
-    await db.commit()
+    cancelled = _cancelled_ids(resp)
+    if cancelled:
+        await db.execute(
+            sa_update(Trade)
+            .where(Trade.user_id == user.id, Trade.status == "pending", Trade.order_id.in_(cancelled))
+            .values(status="cancelled")
+        )
+        await db.commit()
 
     return {"cancelled_all": True, "response": resp}
 
@@ -396,7 +508,7 @@ async def sync_order_status(user: User, db: AsyncSession):
             if oid:
                 open_ids.add(str(oid))
             filled = o.get("filled_size") or o.get("filledSize") or o.get("size_matched")
-            if filled is not None:
+            if oid and filled is not None:
                 try:
                     filled_map[str(oid)] = {"filled": float(filled)}
                 except (ValueError, TypeError):
@@ -406,10 +518,6 @@ async def sync_order_status(user: User, db: AsyncSession):
             if oid:
                 open_ids.add(str(oid))
 
-    if not open_ids and not filled_map:
-        # 如果 CLOB 返回空，可能所有挂单都已成交/撤销，但我们不能武断把本地 pending 全改 filled
-        return 0
-
     # 1. 更新 filled_size
     for oid, info in filled_map.items():
         await db.execute(
@@ -418,22 +526,41 @@ async def sync_order_status(user: User, db: AsyncSession):
             .values(filled=info["filled"])
         )
 
-    # 2. 本地 pending 的 trade，但 CLOB open_orders 不在了 → filled
+    # 2. 本地 pending 的 trade，但 CLOB open_orders 不在了 -> 逐个查询详情，区分成交/取消/过期
     result = await db.execute(
-        select(Trade.order_id).where(
+        select(Trade).where(
             Trade.user_id == user.id,
             Trade.status == "pending",
             Trade.order_id.isnot(None),
         )
     )
-    local_pending = [r[0] for r in result.all()]
-    to_fill = [oid for oid in local_pending if oid not in open_ids]
-    if to_fill:
+    local_pending = result.scalars().all()
+    status_updates = 0
+    for trade in local_pending:
+        oid = str(trade.order_id)
+        if oid in open_ids:
+            continue
+        try:
+            detail = await _run_clob(client.get_order, oid, timeout=10)
+        except Exception as e:
+            logger.debug("sync_order_status get_order failed order=%s user=%s: %s", oid, user.id, e)
+            continue
+        if not isinstance(detail, dict):
+            continue
+        new_status, filled = _order_status_from_detail(detail, trade.size)
+        if not new_status:
+            continue
+        values = {"status": new_status}
+        if filled is not None:
+            values["filled"] = filled
+        elif new_status == "filled":
+            values["filled"] = trade.size
         await db.execute(
             sa_update(Trade)
-            .where(Trade.order_id.in_(to_fill), Trade.user_id == user.id)
-            .values(status="filled", filled=Trade.size)
+            .where(Trade.order_id == oid, Trade.user_id == user.id)
+            .values(**values)
         )
+        status_updates += 1
 
     await db.commit()
-    return len(to_fill)
+    return status_updates

@@ -69,6 +69,9 @@ async def btc_place_order(req: OrderReq, user: User = Depends(get_current_user),
             side=req.side,
             order_type=req.order_type,
             tick_size=req.tick_size,
+            neg_risk=req.neg_risk,
+            market_slug=req.market_slug,
+            condition_id=req.condition_id,
             usdc_amount=req.usdc_amount,
         )
         return result
@@ -86,6 +89,10 @@ async def btc_market_order(req: MarketOrderReq, user: User = Depends(get_current
             amount=req.amount,
             side=req.side,
             order_type=req.order_type,
+            tick_size=req.tick_size,
+            neg_risk=req.neg_risk,
+            market_slug=req.market_slug,
+            condition_id=req.condition_id,
         )
         return result
     except Exception as e:
@@ -101,6 +108,7 @@ async def btc_sell(req: SellReq, user: User = Depends(get_current_user), db: Asy
             token_id=req.token_id,
             size=req.size,
             tick_size=req.tick_size,
+            neg_risk=req.neg_risk,
             market_slug=req.market_slug,
             condition_id=req.condition_id,
         )

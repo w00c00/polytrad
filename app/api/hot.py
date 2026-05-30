@@ -59,6 +59,9 @@ async def hot_order(req: OrderReq, user: User = Depends(get_current_user), db: A
                 token_id=req.token_id, price=0, size=0,
                 side=req.side, order_type="GTC",
                 tick_size=req.tick_size,
+                neg_risk=req.neg_risk,
+                market_slug=req.market_slug,
+                condition_id=req.condition_id,
                 usdc_amount=usdc,
             )
         return await place_limit_order(
@@ -66,6 +69,9 @@ async def hot_order(req: OrderReq, user: User = Depends(get_current_user), db: A
             token_id=req.token_id, price=req.price, size=req.size,
             side=req.side, order_type=req.order_type,
             tick_size=req.tick_size,
+            neg_risk=req.neg_risk,
+            market_slug=req.market_slug,
+            condition_id=req.condition_id,
             usdc_amount=req.usdc_amount,
         )
     except HTTPException:

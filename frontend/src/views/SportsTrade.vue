@@ -110,7 +110,7 @@ const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const prediction = ref('')
 const form = reactive({ direction: 'YES', amount: 10 })
-let selectedMarketObj: any = null
+const selectedMarketObj = ref<any>(null)
 
 async function loadEvents() {
   loading.value = true
@@ -130,7 +130,7 @@ function selectMarket(row: any) {
     ElMessage.warning('该市场缺少 token 信息')
     return
   }
-  selectedMarketObj = row
+  selectedMarketObj.value = row
   ElMessage.success(`已选择: ${row.question_zh || row.question}`)
 }
 
@@ -152,11 +152,12 @@ function explainOrderError(msg: string): string {
 async function placeOrder() {
   // P0 #2: 根据 direction (YES/NO) 正确选择 token_id，side 统一 BUY
   // YES → token_ids[0], NO → token_ids[1]
-  if (!selectedMarketObj || !selectedMarketObj.token_ids?.length) {
+  const market = selectedMarketObj.value
+  if (!market || !market.token_ids?.length) {
     ElMessage.warning('请先点击"选择"按钮选中市场')
     return
   }
-  const tokens = selectedMarketObj.token_ids
+  const tokens = market.token_ids
   const tokenId = form.direction === 'NO' ? tokens[1] : tokens[0]
   if (!tokenId) {
     ElMessage.warning('该市场缺少对应方向的 token')
@@ -168,7 +169,10 @@ async function placeOrder() {
       token_id: tokenId,
       side: 'BUY',
       order_type: 'GTC',
-      tick_size: selectedMarketObj.tick_size || '0.01',
+      tick_size: market.tick_size || '0.01',
+      neg_risk: market.neg_risk || false,
+      market_slug: market.slug || '',
+      condition_id: market.condition_id || '',
       usdc_amount: form.amount,
     })
     const d = resp.data

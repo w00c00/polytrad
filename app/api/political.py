@@ -39,25 +39,33 @@ async def political_results(
 @router.post("/order")
 async def political_order(req: OrderReq, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """下单"""
-    if req.usdc_amount > 0 or req.order_type == "FOK":
-        # 市价路径：优先使用 usdc_amount
-        usdc = req.usdc_amount if req.usdc_amount > 0 else (req.size * req.price)
-        if usdc <= 0:
-            raise HTTPException(400, "下单金额必须大于 0")
-        return await place_limit_order(
-            user, db,
-            token_id=req.token_id, price=0, size=0,
-            side=req.side, order_type="GTC",
-            tick_size=req.tick_size,
-            usdc_amount=usdc,
-        )
     try:
+        if req.usdc_amount > 0 or req.order_type == "FOK":
+            # 市价路径：优先使用 usdc_amount
+            usdc = req.usdc_amount if req.usdc_amount > 0 else (req.size * req.price)
+            if usdc <= 0:
+                raise HTTPException(400, "下单金额必须大于 0")
+            return await place_limit_order(
+                user, db,
+                token_id=req.token_id, price=0, size=0,
+                side=req.side, order_type="GTC",
+                tick_size=req.tick_size,
+                neg_risk=req.neg_risk,
+                market_slug=req.market_slug,
+                condition_id=req.condition_id,
+                usdc_amount=usdc,
+            )
         return await place_limit_order(
             user, db,
             token_id=req.token_id, price=req.price, size=req.size,
             side=req.side, order_type=req.order_type,
             tick_size=req.tick_size,
+            neg_risk=req.neg_risk,
+            market_slug=req.market_slug,
+            condition_id=req.condition_id,
             usdc_amount=req.usdc_amount,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"下单失败: {e}")

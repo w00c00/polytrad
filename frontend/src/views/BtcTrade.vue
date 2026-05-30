@@ -492,6 +492,8 @@ async function placeOrder() {
         side: 'BUY',
         order_type: 'GTC',
         tick_size: selectedTickSize.value,
+        neg_risk: selectedNegRisk.value,
+        market_slug: selectedSlug.value,
         usdc_amount: orderForm.amount,
       })
       const d = resp.data
@@ -508,6 +510,8 @@ async function placeOrder() {
         side: 'BUY',
         order_type: 'GTC',
         tick_size: selectedTickSize.value,
+        neg_risk: selectedNegRisk.value,
+        market_slug: selectedSlug.value,
       })
       ElMessage.success(`下单成功: $${orderForm.amount} → ${size} 份 @ $${price.toFixed(3)}`)
     }
@@ -557,7 +561,14 @@ async function quickSell(p: any) {
   sellingAsset.value = tokenId
   try {
     // P0 #1: 卖出持仓走专用 sell-position 接口，后端读 CLOB best bid 定价，避免前端用错价
-    const resp = await btcApi.sell({ token_id: tokenId, size })
+    const resp = await btcApi.sell({
+      token_id: tokenId,
+      size,
+      tick_size: p.tick_size || p.orderPriceMinTickSize || '0.01',
+      neg_risk: p.negRisk || p.neg_risk || false,
+      market_slug: p.slug || p.marketSlug || '',
+      condition_id: p.conditionId || p.condition_id || '',
+    })
     const price = resp.data?.price ?? 0
     ElMessage.success(`挂卖单成功: ${size} 份 @ $${price.toFixed(3)} ≈ $${(size * price).toFixed(2)}`)
     loadOrders()

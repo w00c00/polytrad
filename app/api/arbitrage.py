@@ -48,6 +48,8 @@ async def arbitrage_execute(
     tick_size: str = "0.01",
     neg_risk: bool = True,
     usdc_amount: float = 0,
+    market_slug: str = "",
+    condition_id: str = "",
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -58,6 +60,9 @@ async def arbitrage_execute(
             token_id=token_id, price=price, size=size,
             side=side, order_type="GTC",
             tick_size=tick_size,
+            neg_risk=neg_risk,
+            market_slug=market_slug,
+            condition_id=condition_id,
             usdc_amount=usdc_amount,
         )
     except Exception as e:

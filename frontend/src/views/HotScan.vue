@@ -56,7 +56,9 @@
         </el-form-item>
       </el-form>
       <el-table :data="detailMarkets" size="small">
-        <el-table-column prop="question" label="结果" show-overflow-tooltip />
+        <el-table-column label="结果" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.question_zh || row.question }}</template>
+        </el-table-column>
         <el-table-column label="YES" width="80">
           <template #default="{ row }">${{ row.yes_price.toFixed(3) }}</template>
         </el-table-column>
@@ -123,6 +125,8 @@ async function quickBuy(row: any, direction: string = 'YES') {
       order_type: 'GTC',
       tick_size: row.tick_size || '0.01',
       neg_risk: row.neg_risk || false,
+      market_slug: row.slug || '',
+      condition_id: row.condition_id || '',
       usdc_amount: orderAmount.value,
     })
     const d = resp.data

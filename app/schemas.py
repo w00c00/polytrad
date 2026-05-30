@@ -56,6 +56,8 @@ class OrderReq(BaseModel):
     tick_size: str = "0.01"
     neg_risk: bool = False
     usdc_amount: float = 0  # > 0 时自动从 CLOB 读盘口价计算 size
+    market_slug: str = ""
+    condition_id: str = ""
 
 
 class MarketOrderReq(BaseModel):
@@ -63,6 +65,10 @@ class MarketOrderReq(BaseModel):
     amount: float  # 美元金额
     side: str  # BUY / SELL
     order_type: str = "FOK"
+    tick_size: str = "0.01"
+    neg_risk: bool = False
+    market_slug: str = ""
+    condition_id: str = ""
 
 
 class SellReq(BaseModel):
@@ -70,6 +76,7 @@ class SellReq(BaseModel):
     token_id: str
     size: float
     tick_size: str = "0.01"
+    neg_risk: bool = False
     market_slug: str = ""
     condition_id: str = ""
 

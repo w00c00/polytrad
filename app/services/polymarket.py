@@ -65,6 +65,12 @@ _ENTITIES = {
     "Toronto Raptors": "多伦多猛龙队", "Utah Jazz": "犹他爵士队",
     "Washington Wizards": "华盛顿奇才队", "Detroit Pistons": "底特律活塞队",
     "Charlotte Hornets": "夏洛特黄蜂队", "LA Clippers": "洛杉矶快船队",
+    "Spurs": "马刺", "Thunder": "雷霆", "Warriors": "勇士", "Celtics": "凯尔特人",
+    "Knicks": "尼克斯", "Pacers": "步行者", "Mavericks": "独行侠",
+    "Paris Saint-Germain FC": "巴黎圣日耳曼", "PSG": "巴黎圣日耳曼",
+    "Arsenal FC": "阿森纳", "Arsenal": "阿森纳", "Manchester City": "曼城",
+    "Liverpool": "利物浦", "Chelsea": "切尔西", "Real Madrid": "皇家马德里",
+    "Barcelona": "巴塞罗那", "Bayern Munich": "拜仁慕尼黑",
     # 足球国家
     "France": "法国", "Brazil": "巴西", "Germany": "德国", "Argentina": "阿根廷",
     "Spain": "西班牙", "England": "英格兰", "Portugal": "葡萄牙", "Italy": "意大利",
@@ -78,6 +84,7 @@ _ENTITIES = {
     "Sweden": "瑞典", "Wales": "威尔士", "Scotland": "苏格兰",
     "Ireland": "爱尔兰", "Norway": "挪威", "Austria": "奥地利",
     "Czech Republic": "捷克", "Turkey": "土耳其", "Serbia": "塞尔维亚",
+    "Saudi Arabia": "沙特阿拉伯", "Bulgaria": "保加利亚", "Lebanon": "黎巴嫩",
     # 网球运动员
     "Novak Djokovic": "德约科维奇", "Carlos Alcaraz": "阿尔卡拉斯",
     "Jannik Sinner": "辛纳", "Daniil Medvedev": "梅德韦杰夫",
@@ -90,9 +97,16 @@ _ENTITIES = {
     "Max Verstappen": "维斯塔潘", "Lewis Hamilton": "汉密尔顿",
     "Charles Leclerc": "勒克莱尔", "Lando Norris": "诺里斯",
     # 政治人物
-    "Trump": "特朗普", "Biden": "拜登", "DeSantis": "德桑蒂斯",
+    "Donald Trump": "特朗普", "Trump": "特朗普", "Biden": "拜登", "DeSantis": "德桑蒂斯",
     "Harris": "哈里斯", "Vance": "万斯", "Newsom": "纽森",
     "Ramaley": "拉马利", "Haley": "黑利", "RFK": "小肯尼迪",
+    "Elon Musk": "埃隆·马斯克", "Ted Cruz": "泰德·克鲁兹",
+    "NYC Mayor": "纽约市长", "White House": "白宫", "Zelenskyy": "泽连斯基",
+    "CZ Binance": "赵长鹏", "CZ": "赵长鹏",
+    # 常见资产/地缘实体
+    "WTI Crude Oil": "WTI 原油", "WTI": "WTI",
+    "Strait of Hormuz": "霍尔木兹海峡", "Iran": "伊朗", "Israel": "以色列",
+    "Russia": "俄罗斯", "Ukraine": "乌克兰", "NATO": "北约",
 }
 
 # 完整短语替换（优先于单词替换）
@@ -104,10 +118,12 @@ _PHRASES = [
     ("NBA Championship", "NBA 总冠军"),
     ("NBA Champion", "NBA 冠军"),
     ("NBA Playoffs", "NBA 季后赛"),
+    ("World Cup Winner", "世界杯冠军"),
     ("World Cup", "世界杯"),
     ("Super Bowl", "超级碗"),
     ("World Series", "世界大赛"),
     ("Champions League", "欧冠"),
+    ("Counter-Strike", "CS2"),
     ("Premier League", "英超"),
     ("La Liga", "西甲"),
     ("Bundesliga", "德甲"),
@@ -125,6 +141,16 @@ _PHRASES = [
     ("2026 NBA Finals", "2026 NBA 总决赛"),
     ("Winner", "冠军"), ("Western Conference", "西部"), ("Eastern Conference", "东部"),
     ("Conference Champion", "联盟冠军"),
+    ("More Markets", "更多市场"),
+    ("Exact Score", "精确比分"),
+    ("Halftime Result", "半场赛果"),
+    ("Most Yellow Cards", "最多黄牌"),
+    ("Parliamentary Election", "议会选举"),
+    ("Presidential Election", "总统选举"),
+    ("House Election", "众议院选举"),
+    ("Governor Republican Primary", "州长共和党初选"),
+    ("Nobel Peace Prize", "诺贝尔和平奖"),
+    ("by end of", "在月底前"),
     ("end of", "结束前"),
     ("above", "高于"), ("below", "低于"),
     ("finals", "总决赛"), ("championship", "冠军赛"),
@@ -134,6 +160,16 @@ _PHRASES = [
     ("democrat", "民主党"), ("republican", "共和党"),
     ("win the", "赢得"), ("beat", "击败"), ("win", "赢得"),
     ("be the next", "成为下一任"),
+    ("permanent peace deal", "永久和平协议"),
+    ("continue through", "持续到"),
+    ("ceasefire", "停火"),
+    ("traffic returns to normal", "交通恢复正常"),
+    ("by May 31", "在 5 月 31 日前"),
+    ("tweets", "推文"), ("posts", "发帖"),
+    ("end in a draw", "打平"),
+    ("O/U", "大小盘"),
+    ("hit (LOW)", "跌到"),
+    ("hit (HIGH)", "涨到"),
 ]
 
 # 简单词汇替换（最后执行）
@@ -150,6 +186,12 @@ def translate_title(title: str) -> str:
     """翻译 Polymarket 标题为中文"""
     import re
     result = title
+
+    month_map = {
+        "January": "1月", "February": "2月", "March": "3月", "April": "4月",
+        "May": "5月", "June": "6月", "July": "7月", "August": "8月",
+        "September": "9月", "October": "10月", "November": "11月", "December": "12月",
+    }
 
     # BTC 短周期：提取 ET 时间并转为北京时间
     btc_m = re.search(r"(Bitcoin|Ethereum|BTC|ETH)\s+Up or Down\s*-\s*\w+ \d+,?\s*(\d{1,2}:\d{2}[AP]M)\s*-\s*(\d{1,2}:\d{2}[AP]M)\s*ET", result, re.IGNORECASE)
@@ -172,6 +214,24 @@ def translate_title(title: str) -> str:
         result = result.replace(en, zh)
 
     # 句式匹配
+    # "Will X win on YYYY-MM-DD?"
+    m = re.match(r"^Will\s+(.+?)\s+(?:win|赢得)\s+on\s+(\d{4}-\d{2}-\d{2})\?$", result)
+    if m:
+        return f"{m.group(1)} 会在 {m.group(2)} 获胜吗？"
+
+    # "Will X continue through Y?"
+    m = re.match(r"^Will\s+(.+?)\s+(?:continue through|持续到)\s+(.+?)\?$", result, re.IGNORECASE)
+    if m:
+        date_text = m.group(2)
+        for en, zh in month_map.items():
+            date_text = date_text.replace(en, zh)
+        return f"{m.group(1)} 会持续到 {date_text} 吗？"
+
+    # "Will X end in a draw?"
+    m = re.match(r"^Will\s+(.+?)\s+(?:end in a draw|打平)\?$", result, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} 会打平吗？"
+
     # "Will X win Y?" / "Will X 赢得 Y?"
     m = re.match(r"^Will\s+(.+?)\s+(?:win|赢得)\s+(.+?)\?$", result)
     if m:
@@ -207,6 +267,27 @@ def translate_title(title: str) -> str:
     m = re.match(r"^(.+?)\s+vs\.?\s+(.+)$", result)
     if m:
         return f"{m.group(1)} vs {m.group(2)}"
+
+    # "X # Truth Social posts June 1 - June 3, 2026?"
+    m = re.match(r"^(.+?)\s+#\s+(.+?)\s+(推文|发帖|tweets|posts)\s+(.+?)\?$", result, re.IGNORECASE)
+    if m:
+        date_text = m.group(4)
+        for en, zh in month_map.items():
+            date_text = date_text.replace(en, zh)
+        return f"{m.group(1)} 在 {date_text} 的 {m.group(2)} 发帖数量？"
+
+    # "X # tweets/posts June 1 - June 3, 2026?"
+    m = re.match(r"^(.+?)\s+#\s+(推文|发帖|tweets|posts)\s+(.+?)\?$", result, re.IGNORECASE)
+    if m:
+        date_text = m.group(3)
+        for en, zh in month_map.items():
+            date_text = date_text.replace(en, zh)
+        return f"{m.group(1)} 在 {date_text} 的发帖数量？"
+
+    # "X Winner"
+    m = re.match(r"^(.+?)\s+冠军$", result, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)}冠军"
 
     # "NBA/NFL: Will X beat Y by more than N points..."
     m = re.match(r"^(NBA|NFL):\s+Will\s+(.+?)\s+(?:beat|击败)\s+(.+?)\s+by more than\s+(\S+)\s+points?\s+in their\s+(.+?)\s+matchup\??$", result, re.IGNORECASE)

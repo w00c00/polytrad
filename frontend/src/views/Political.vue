@@ -12,7 +12,7 @@
           <template #default="{ row }">{{ row.title_zh || row.title }}</template>
         </el-table-column>
         <el-table-column label="创建时间 (北京)" width="180">
-          <template #default="{ row }">{{ row.start_date_bj || row.start_date || '-' }}</template>
+          <template #default="{ row }">{{ row.created_at_bj || row.start_date_bj || '-' }}</template>
         </el-table-column>
         <el-table-column label="市场数" width="80">
           <template #default="{ row }">{{ row.markets?.length || 0 }}</template>
@@ -59,8 +59,8 @@
         </el-table-column>
         <el-table-column label="操作" width="150">
           <template #default="{ row }">
-            <el-button size="small" type="success" @click="quickBuy(row, 'BUY')">买YES</el-button>
-            <el-button size="small" type="danger" @click="quickBuy(row, 'SELL')">买NO</el-button>
+            <el-button size="small" type="success" @click="quickBuy(row, 'YES')">买YES</el-button>
+            <el-button size="small" type="danger" @click="quickBuy(row, 'NO')">买NO</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -99,23 +99,25 @@ function expandMarket(row: any) {
   prediction.value = ''
 }
 
-async function quickBuy(row: any, side: string) {
+async function quickBuy(row: any, direction: string) {
   if (!row.token_ids?.length) return
-  const tokenId = side === 'BUY' ? row.token_ids[0] : row.token_ids[1]
-  const price = side === 'BUY' ? row.yes_price : (1 - row.yes_price)
-  const size = Math.floor(orderAmount.value / price)
+  const tokenId = direction === 'NO' ? row.token_ids[1] : row.token_ids[0]
+  if (!tokenId) { ElMessage.warning('缺少对应方向的 token'); return }
   try {
-    await politicalApi.order({
+    const { data } = await politicalApi.order({
       token_id: tokenId,
-      price,
-      size,
       side: 'BUY',
       order_type: 'GTC',
       tick_size: row.tick_size || '0.01',
       neg_risk: row.neg_risk || false,
+      market_slug: row.slug || '',
+      condition_id: row.condition_id || '',
+      usdc_amount: orderAmount.value,
     })
-    ElMessage.success(`下单成功: ${size} shares @ $${price.toFixed(3)}`)
-  } catch {}
+    ElMessage.success(`买入 ${direction} 成功: $${orderAmount.value} → ${data.size} 份 @ $${data.price}`)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '下单失败')
+  }
 }
 
 async function runPredict() {

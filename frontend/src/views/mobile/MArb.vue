@@ -15,7 +15,9 @@
         </div>
         <div class="card-info">
           <span>YES 总和: {{ o.yes_sum }}</span>
+          <span>{{ o.executable ? '可买入篮子' : '需库存' }}</span>
         </div>
+        <div class="card-note" v-if="o.execution_note">{{ o.execution_note }}</div>
       </div>
     </div>
   </div>
@@ -48,5 +50,6 @@ onMounted(loadData)
 .card { background: #fff; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .card-title { font-size: 14px; font-weight: bold; color: #303133; margin-bottom: 6px; }
 .card-info { font-size: 13px; color: #606266; display: flex; gap: 16px; margin-top: 4px; }
+.card-note { font-size: 12px; color: #909399; margin-top: 6px; line-height: 1.4; }
 .empty-hint { text-align: center; color: #909399; padding: 40px 0; font-size: 14px; }
 </style>

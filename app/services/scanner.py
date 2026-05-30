@@ -42,6 +42,162 @@ SPORTS_KEYWORDS = [
     "super bowl", "world series", "stanley cup", "playoffs",
 ]
 
+
+def _json_list(value, default=None) -> list:
+    """Gamma 有些数组字段以 JSON 字符串返回，这里统一转成 list。"""
+    if default is None:
+        default = []
+    if value is None:
+        return default
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else default
+        except json.JSONDecodeError:
+            return default
+    return default
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_tags(item: dict) -> set[str]:
+    tags = set()
+    for tag in item.get("tags") or []:
+        if isinstance(tag, dict):
+            for key in ("label", "slug", "id"):
+                if tag.get(key) is not None:
+                    tags.add(str(tag[key]).lower())
+        else:
+            tags.add(str(tag).lower())
+    for key in ("category", "subcategory", "seriesSlug", "sportsMarketType"):
+        if item.get(key):
+            tags.add(str(item[key]).lower())
+    return tags
+
+
+def _combined_text(item: dict) -> str:
+    parts = [
+        item.get("title") or "",
+        item.get("question") or "",
+        item.get("description") or "",
+        item.get("slug") or "",
+        " ".join(_extract_tags(item)),
+    ]
+    return " ".join(parts).lower()
+
+
+def _is_open(item: dict, now: datetime) -> bool:
+    if item.get("closed") or item.get("archived") or item.get("ended"):
+        return False
+    if item.get("active") is False:
+        return False
+    end_dt = _parse_dt(item.get("endDate") or item.get("endDateIso"))
+    if end_dt and end_dt < now:
+        return False
+    return True
+
+
+def _market_yes_price(market: dict) -> float:
+    prices = _json_list(market.get("outcomePrices"), ["0.5", "0.5"])
+    return _to_float(prices[0], 0.5) if prices else 0.5
+
+
+def _market_token_ids(market: dict) -> list:
+    return _json_list(market.get("clobTokenIds"), [])
+
+
+def _market_tick_size(market: dict) -> str:
+    return str(market.get("minimumTickSize") or market.get("orderPriceMinTickSize") or "0.01")
+
+
+def _market_volume_24h(market: dict) -> float:
+    return _to_float(
+        market.get("volume24hrClob")
+        or market.get("volume24hr")
+        or market.get("volumeClob")
+        or market.get("volume"),
+        0.0,
+    )
+
+
+def _market_liquidity(market: dict) -> float:
+    return _to_float(market.get("liquidityClob") or market.get("liquidity") or market.get("liquidityNum"), 0.0)
+
+
+def _normalise_market(market: dict, include_no_price: bool = True) -> dict:
+    yes_price = _market_yes_price(market)
+    data = {
+        "slug": market.get("slug", ""),
+        "condition_id": market.get("conditionId", ""),
+        "question": market.get("question", ""),
+        "question_zh": translate_title(market.get("question", "")),
+        "yes_price": yes_price,
+        "token_ids": _market_token_ids(market),
+        "volume": _market_volume_24h(market),
+        "liquidity": _market_liquidity(market),
+        "score": market.get("score", ""),
+        "neg_risk": bool(market.get("negRisk", False)),
+        "tick_size": _market_tick_size(market),
+        "sports_market_type": market.get("sportsMarketType"),
+        "game_start_bj": to_beijing_time(market.get("gameStartTime") or market.get("eventStartTime")),
+        "accepting_orders": market.get("acceptingOrders", True),
+    }
+    if include_no_price:
+        data["no_price"] = 1 - yes_price
+    return data
+
+
+async def _fetch_gamma_pages(endpoint: str, params: dict, max_pages: int = 10, page_size: int = 100) -> list[dict]:
+    items: list[dict] = []
+    for offset in range(0, max_pages * page_size, page_size):
+        page_params = {
+            "active": "true",
+            "closed": "false",
+            "limit": page_size,
+            "offset": offset,
+            **params,
+        }
+        try:
+            resp = await gamma_api.client.get(f"{gamma_api.base}/{endpoint}", params=page_params)
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            items.extend(batch)
+            if len(batch) < page_size:
+                break
+        except Exception as e:
+            logger.warning("Gamma %s page offset=%s failed: %s", endpoint, offset, e)
+            break
+    return items
+
+
+async def _save_scan(db: AsyncSession | None, scan_type: str, results: list[dict]) -> None:
+    if not db:
+        return
+    scan = ScanResult(scan_type=scan_type, market_data=json.dumps(results, ensure_ascii=False))
+    db.add(scan)
+    await db.commit()
+
 # BTC 短周期 series 列表
 # timestamp 型: slug 格式为 {prefix}-{unix_ts}，可直接构造查询
 BTC_TIMESTAMP_SERIES = [
@@ -60,22 +216,7 @@ def _extract_market_info(event: dict) -> list[dict]:
     """从 event 提取 markets 信息"""
     markets_info = []
     for m in event.get("markets", []):
-        prices = m.get("outcomePrices", '["0.5","0.5"]')
-        if isinstance(prices, str):
-            prices = json.loads(prices)
-        yes_price = float(prices[0]) if prices else 0.5
-        token_ids = m.get("clobTokenIds", [])
-        if isinstance(token_ids, str):
-            token_ids = json.loads(token_ids)
-        markets_info.append({
-            "slug": m.get("slug", ""),
-            "question": m.get("question", ""),
-            "yes_price": yes_price,
-            "no_price": 1 - yes_price,
-            "token_ids": token_ids,
-            "neg_risk": m.get("negRisk", False),
-            "tick_size": m.get("minimumTickSize", "0.01"),
-        })
+        markets_info.append(_normalise_market(m))
     return markets_info
 
 
@@ -104,19 +245,8 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
             event = await gamma_api.get_event(slug)
             if not event:
                 return None
-            if event.get("closed") or not event.get("active"):
+            if not _is_open(event, now):
                 return None
-            # 过滤已过期
-            end_str = event.get("endDate") or ""
-            if end_str:
-                try:
-                    ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                    if ed.tzinfo is None:
-                        ed = ed.replace(tzinfo=timezone.utc)
-                    if ed < now:
-                        return None
-                except (ValueError, TypeError):
-                    pass
             title = event.get("title", "")
             return {
                 "event_slug": event.get("slug", ""),
@@ -139,25 +269,14 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
             events = data.get("events", [])
             results = []
             for event in events:
-                if event.get("closed") or not event.get("active"):
+                if not _is_open(event, now):
                     continue
                 slug = event.get("slug", "")
                 full_event = await gamma_api.get_event(slug)
                 if not full_event:
                     continue
-                if full_event.get("closed") or not full_event.get("active"):
+                if not _is_open(full_event, now):
                     continue
-                # 过滤已过期
-                end_str = full_event.get("endDate") or ""
-                if end_str:
-                    try:
-                        ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                        if ed.tzinfo is None:
-                            ed = ed.replace(tzinfo=timezone.utc)
-                        if ed < now:
-                            continue
-                    except (ValueError, TypeError):
-                        pass
                 title = full_event.get("title", "")
                 results.append({
                     "event_slug": slug,
@@ -187,180 +306,106 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
     return results
 
 
-async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_volume: float = 5000) -> list[dict]:
-    """扫描即将到期的热门市场（从 markets 端点分页获取）"""
+async def scan_hot_markets(db: AsyncSession | None, hours_until_expiry: int = 24, min_volume: float = 5000) -> list[dict]:
+    """扫描即将到期的热门市场。"""
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=hours_until_expiry)
     seen_slugs = set()
     results = []
 
-    for offset in range(0, 2000, 100):
-        try:
-            resp = await gamma_api.client.get(f"{gamma_api.base}/markets", params={
-                "active": "true", "closed": "false", "limit": 100,
-                "order": "volume", "ascending": "false", "offset": str(offset),
-            })
-            resp.raise_for_status()
-            markets = resp.json()
-            if not markets:
-                break
-            for m in markets:
-                end = m.get("endDate") or m.get("endDateIso") or ""
-                if not end:
-                    continue
-                try:
-                    ed = datetime.fromisoformat(end.replace("Z", "+00:00"))
-                    if ed.tzinfo is None:
-                        ed = ed.replace(tzinfo=timezone.utc)
-                except (ValueError, TypeError):
-                    continue
-                if ed < now or ed > cutoff:
-                    continue
-                vol = float(m.get("volume") or 0)
-                if vol < min_volume:
-                    continue
-                slug = m.get("slug", "")
-                if slug in seen_slugs:
-                    continue
-                seen_slugs.add(slug)
-                q = m.get("question", "")
-                if any(kw in q.lower() for kw in CHINA_KEYWORDS):
-                    continue
-                prices = m.get("outcomePrices", '["0.5","0.5"]')
-                if isinstance(prices, str):
-                    prices = json.loads(prices)
-                yes_price = float(prices[0]) if prices else 0.5
-                token_ids = m.get("clobTokenIds", [])
-                if isinstance(token_ids, str):
-                    token_ids = json.loads(token_ids)
-                results.append({
-                    "event_slug": slug,
-                    "title": q,
-                    "title_zh": translate_title(q),
-                    "end_date_bj": to_beijing_time(end),
-                    "volume_24h": vol,
-                    "markets": [{
-                        "slug": slug,
-                        "question": q,
-                        "question_zh": translate_title(q),
-                        "yes_price": yes_price,
-                        "no_price": 1 - yes_price,
-                        "token_ids": token_ids,
-                        "volume": vol,
-                        "liquidity": float(m.get("liquidity") or 0),
-                        "neg_risk": m.get("negRisk", False),
-                        "tick_size": m.get("minimumTickSize", "0.01"),
-                    }],
-                })
-        except Exception as e:
-            logger.warning(f"扫描尾盘 markets offset={offset} 失败: {e}")
-            break
+    markets = await _fetch_gamma_pages(
+        "markets",
+        {
+            "order": "volume24hr",
+            "ascending": "false",
+            "end_date_min": now.isoformat().replace("+00:00", "Z"),
+            "end_date_max": cutoff.isoformat().replace("+00:00", "Z"),
+        },
+        max_pages=20,
+    )
+
+    for m in markets:
+        if not _is_open(m, now):
+            continue
+        end = m.get("endDate") or m.get("endDateIso") or ""
+        ed = _parse_dt(end)
+        if not ed or ed > cutoff:
+            continue
+        vol = _market_volume_24h(m)
+        if vol < min_volume:
+            continue
+        slug = m.get("slug", "")
+        if not slug or slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        q = m.get("question", "")
+        market_info = _normalise_market(m)
+        results.append({
+            "event_slug": slug,
+            "title": q,
+            "title_zh": translate_title(q),
+            "end_date_bj": to_beijing_time(end),
+            "volume_24h": vol,
+            "liquidity": market_info["liquidity"],
+            "markets": [market_info],
+        })
 
     results.sort(key=lambda x: x.get("end_date_bj", ""))
 
-    if db:
-        scan = ScanResult(scan_type="hot", market_data=json.dumps(results, ensure_ascii=False))
-        db.add(scan)
-        await db.commit()
+    await _save_scan(db, "hot", results)
 
     return results
 
 
-async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
-    """扫描政治类市场（分页扫描 500 个事件，过滤政治关键词 + 30 天内创建）"""
+async def scan_new_political_markets(db: AsyncSession | None) -> list[dict]:
+    """扫描政治类新盘，优先使用 Gamma 的 politics tag，再用关键词兜底。"""
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(days=30)  # 只保留 30 天内创建的市场
 
-    # Gamma API 每页最多 100 条，用 offset 分页扫描 500 个事件
+    tagged_events = await _fetch_gamma_pages(
+        "events",
+        {"tag_slug": "politics", "order": "createdAt", "ascending": "false"},
+        max_pages=10,
+    )
+    fallback_events = await _fetch_gamma_pages(
+        "events",
+        {"order": "createdAt", "ascending": "false"},
+        max_pages=5,
+    )
+
     events = []
-    for offset in range(0, 500, 100):
-        try:
-            resp = await gamma_api.client.get(f"{gamma_api.base}/events", params={
-                "active": "true", "closed": "false",
-                "order": "volume24hr", "ascending": "false",
-                "limit": 100, "offset": offset,
-            })
-            resp.raise_for_status()
-            batch = resp.json()
-            if not batch:
-                break
-            events.extend(batch)
-        except Exception:
-            break
+    seen_event_slugs = set()
+    for event in tagged_events + fallback_events:
+        slug = event.get("slug", "")
+        if not slug or slug in seen_event_slugs:
+            continue
+        seen_event_slugs.add(slug)
+        events.append(event)
 
     results = []
     for event in events:
-        # 过滤已过期事件
-        end_str = event.get("endDate") or event.get("endDateIso") or ""
-        if end_str:
-            try:
-                ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                if ed.tzinfo is None:
-                    ed = ed.replace(tzinfo=timezone.utc)
-                if ed < now:
-                    continue
-            except (ValueError, TypeError):
-                pass
-
-        # 过滤 30 天前创建的市场
-        created_str = event.get("createdAt") or ""
-        if created_str:
-            try:
-                created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if created < recent_cutoff:
-                    continue
-            except (ValueError, TypeError):
-                pass
-
-        title = (event.get("title") or "").lower()
-        tags_raw = event.get("tags") or []
-        # tags 是 dict 列表，提取 label 字段
-        tags = []
-        for t in tags_raw:
-            if isinstance(t, dict):
-                tags.append((t.get("label") or "").lower())
-            else:
-                tags.append(str(t).lower())
-        desc = (event.get("description") or "").lower()
-        combined = title + " " + desc + " " + " ".join(tags)
-
-        if not any(kw in combined for kw in POLITICAL_KEYWORDS):
+        if not _is_open(event, now):
             continue
 
-        # 排除中国相关内容
-        if any(kw in combined for kw in CHINA_KEYWORDS):
+        # 过滤 30 天前创建的市场
+        created_str = event.get("createdAt") or event.get("creationDate") or ""
+        created = _parse_dt(created_str)
+        if created and created < recent_cutoff:
+            continue
+
+        combined = _combined_text(event)
+        tags = _extract_tags(event)
+        if "politics" not in tags and not any(kw in combined for kw in POLITICAL_KEYWORDS):
             continue
 
         markets_info = []
         for m in event.get("markets", []):
-            # 过滤单个 market 已过期
-            m_end = m.get("endDate") or m.get("endDateIso") or ""
-            if m_end:
-                try:
-                    med = datetime.fromisoformat(m_end.replace("Z", "+00:00"))
-                    if med.tzinfo is None:
-                        med = med.replace(tzinfo=timezone.utc)
-                    if med < now:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
-            prices = m.get("outcomePrices", '["0.5","0.5"]')
-            if isinstance(prices, str):
-                prices = json.loads(prices)
-            yes_price = float(prices[0]) if prices else 0.5
-            markets_info.append({
-                "slug": m.get("slug", ""),
-                "question": m.get("question", ""),
-                "question_zh": translate_title(m.get("question", "")),
-                "yes_price": yes_price,
-                "token_ids": json.loads(m["clobTokenIds"]) if isinstance(m.get("clobTokenIds"), str) else m.get("clobTokenIds", []),
-                "volume": float(m.get("volume") or 0),
-                "neg_risk": m.get("negRisk", False),
-                "tick_size": m.get("minimumTickSize", "0.01"),
-            })
+            if not _is_open(m, now):
+                continue
+            info = _normalise_market(m)
+            if not info["token_ids"]:
+                continue
+            markets_info.append(info)
 
         if not markets_info:
             continue
@@ -369,282 +414,182 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
             "title_zh": translate_title(event.get("title", "")),
+            "created_at_bj": to_beijing_time(created_str),
             "start_date_bj": to_beijing_time(event.get("startDate") or event.get("startDateIso")),
+            "end_date_bj": to_beijing_time(event.get("endDate") or event.get("endDateIso")),
+            "volume_24h": _to_float(event.get("volume24hr") or event.get("volume"), 0.0),
             "markets": markets_info,
         })
 
-    scan = ScanResult(scan_type="new_political", market_data=json.dumps(results, ensure_ascii=False))
-    db.add(scan)
-    await db.commit()
+    results.sort(key=lambda x: x.get("created_at_bj") or "", reverse=True)
+    await _save_scan(db, "new_political", results)
 
     return results
 
 
-async def scan_arbitrage(db: AsyncSession, threshold: float = 0.03) -> list[dict]:
-    """扫描事件套利机会 - P2 #14: 分页取 500 个 events，避免漏掉偏差大的机会"""
+async def scan_arbitrage(db: AsyncSession | None, threshold: float = 0.03) -> list[dict]:
+    """扫描负风险多结果事件的 YES 篮子套利。"""
     now = datetime.now(timezone.utc)
-    events = []
-    for offset in range(0, 500, 100):
-        try:
-            resp = await gamma_api.client.get(f"{gamma_api.base}/events", params={
-                "active": "true", "closed": "false",
-                "limit": 100, "offset": offset,
-            })
-            resp.raise_for_status()
-            batch = resp.json()
-            if not batch:
-                break
-            events.extend(batch)
-        except Exception:
-            break
+    events = await _fetch_gamma_pages(
+        "events",
+        {"order": "volume24hr", "ascending": "false"},
+        max_pages=15,
+    )
 
     results = []
     for event in events:
-        # 过滤已过期
-        end_str = event.get("endDate") or event.get("endDateIso") or ""
-        if end_str:
-            try:
-                ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                if ed.tzinfo is None:
-                    ed = ed.replace(tzinfo=timezone.utc)
-                if ed < now:
-                    continue
-            except (ValueError, TypeError):
-                pass
-
-        # 排除中国相关内容
-        title_lower = (event.get("title") or "").lower()
-        if any(kw in title_lower for kw in CHINA_KEYWORDS):
+        if not _is_open(event, now):
             continue
 
-        markets = event.get("markets", [])
+        markets = [m for m in event.get("markets", []) if _is_open(m, now)]
         if len(markets) < 2:
             continue
 
-        yes_sum = 0.0
+        neg_risk_ids = {str(m.get("negRiskMarketID")) for m in markets if m.get("negRiskMarketID")}
+        is_neg_risk_event = bool(event.get("enableNegRisk") or event.get("negRisk") or neg_risk_ids)
+        if not is_neg_risk_event:
+            continue
+
+        yes_ask_sum = 0.0
+        yes_bid_sum = 0.0
+        valid_buy_basket = True
+        valid_sell_basket = True
         market_details = []
-        valid = True
 
         for m in markets:
-            prices = m.get("outcomePrices", '["0.5","0.5"]')
-            if isinstance(prices, str):
-                try:
-                    prices = json.loads(prices)
-                except json.JSONDecodeError:
-                    valid = False
-                    break
-            yes_price = float(prices[0]) if prices else 0.5
-            yes_sum += yes_price
-            market_details.append({
-                "slug": m.get("slug", ""),
-                "question": m.get("question", ""),
-                "yes_price": yes_price,
-                "token_ids": json.loads(m["clobTokenIds"]) if isinstance(m.get("clobTokenIds"), str) else m.get("clobTokenIds", []),
+            info = _normalise_market(m)
+            if not info["token_ids"] or not info.get("accepting_orders", True):
+                valid_buy_basket = False
+                valid_sell_basket = False
+                continue
+            yes_price = info["yes_price"]
+            best_ask = _to_float(m.get("bestAsk"), 0.0)
+            best_bid = _to_float(m.get("bestBid"), 0.0)
+            if best_ask <= 0 or best_ask >= 1:
+                valid_buy_basket = False
+            else:
+                yes_ask_sum += best_ask
+            if best_bid <= 0 or best_bid >= 1:
+                valid_sell_basket = False
+            else:
+                yes_bid_sum += best_bid
+            info.update({
+                "best_ask": best_ask or yes_price,
+                "best_bid": best_bid or yes_price,
                 "neg_risk": True,
-                "tick_size": m.get("minimumTickSize", "0.01"),
             })
+            market_details.append(info)
 
-        if not valid:
+        if len(market_details) < 2:
             continue
 
-        deviation = abs(yes_sum - 1.0)
-        if deviation < threshold:
+        if valid_buy_basket and yes_ask_sum < 1.0 - threshold:
+            direction = "BUY_YES"
+            price_sum = yes_ask_sum
+            deviation = 1.0 - yes_ask_sum
+            executable = yes_ask_sum >= 0.85
+            note = (
+                "买入所有 YES 结果，完整篮子理论到期兑付 1 USDC。"
+                if executable
+                else "YES 总和过低，可能不是完整结果集，只作为观察候选。"
+            )
+        elif valid_sell_basket and yes_bid_sum > 1.0 + threshold:
+            direction = "SELL_YES"
+            price_sum = yes_bid_sum
+            deviation = yes_bid_sum - 1.0
+            executable = False
+            note = "卖出所有 YES 需要已有库存或完整做市流程，当前版本不建议一键执行。"
+        else:
             continue
 
-        direction = "SELL_YES" if yes_sum > 1.0 else "BUY_YES"
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
             "title_zh": translate_title(event.get("title", "")),
-            "yes_sum": round(yes_sum, 4),
+            "yes_sum": round(price_sum, 4),
+            "yes_ask_sum": round(yes_ask_sum, 4),
+            "yes_bid_sum": round(yes_bid_sum, 4),
             "deviation": round(deviation, 4),
+            "estimated_profit_pct": round(deviation * 100, 2),
             "direction": direction,
+            "executable": executable,
+            "execution_note": note,
+            "end_date_bj": to_beijing_time(event.get("endDate") or event.get("endDateIso")),
             "markets": market_details,
         })
 
-    scan = ScanResult(scan_type="arbitrage", market_data=json.dumps(results, ensure_ascii=False))
-    db.add(scan)
-    await db.commit()
+    results.sort(key=lambda x: x.get("deviation", 0), reverse=True)
+    await _save_scan(db, "arbitrage", results)
 
     return results
 
 
-async def scan_sports_markets(db: AsyncSession) -> list[dict]:
+async def scan_sports_markets(db: AsyncSession | None) -> list[dict]:
     """扫描体育赛事市场（含单场比赛）- P3 #18: 带 2 分钟缓存"""
     return await _cached_scan("sports", _scan_sports_markets_inner, db)
 
 
-async def _scan_sports_markets_inner(db: AsyncSession) -> list[dict]:
-    from datetime import timedelta
-
+async def _scan_sports_markets_inner(db: AsyncSession | None) -> list[dict]:
     now = datetime.now(timezone.utc)
-    # 延长到 14 天，覆盖大满贯等长周期赛事（法网/温网等持续 2 周）
-    soon = now + timedelta(days=14)
-
-    # 1. 扫描 events（冠军/季后赛等长期市场），增加到 200 个
-    events = await gamma_api.get_events(order="volume_24hr", ascending=False, limit=200)
-
+    one_year = now + timedelta(days=365)
     results = []
     seen_slugs = set()
 
-    for event in events:
-        # 过滤已过期
-        end_str = event.get("endDate") or event.get("endDateIso") or ""
-        if end_str:
-            try:
-                ed = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                if ed.tzinfo is None:
-                    ed = ed.replace(tzinfo=timezone.utc)
-                if ed < now:
-                    continue
-            except (ValueError, TypeError):
-                pass
+    events = await _fetch_gamma_pages(
+        "events",
+        {"tag_slug": "sports", "order": "volume24hr", "ascending": "false"},
+        max_pages=20,
+    )
 
+    def is_game_event(event: dict, markets_info: list[dict]) -> bool:
+        tags = _extract_tags(event)
         title = (event.get("title") or "").lower()
-        # P1 #5: Polymarket tags 是字符串列表，不是 dict，去掉错误的类型过滤
-        tags = [str(t).lower() for t in (event.get("tags") or [])]
-        combined = title + " " + " ".join(tags)
+        if "games" in tags or event.get("live") or event.get("score") or event.get("gameStatus"):
+            return True
+        if " vs " in title or " vs. " in title:
+            return True
+        return any(m.get("sports_market_type") and (m.get("game_start_bj") or "game" in str(m.get("sports_market_type"))) for m in markets_info)
 
-        if not any(kw in combined for kw in SPORTS_KEYWORDS):
+    for event in events:
+        slug = event.get("slug", "")
+        if not slug or slug in seen_slugs:
+            continue
+        if not _is_open(event, now):
+            continue
+        end_dt = _parse_dt(event.get("endDate") or event.get("endDateIso"))
+        if end_dt and end_dt > one_year:
             continue
 
         markets_info = []
         for m in event.get("markets", []):
-            # 过滤单个 market 已过期
-            m_end = m.get("endDate") or m.get("endDateIso") or ""
-            if m_end:
-                try:
-                    med = datetime.fromisoformat(m_end.replace("Z", "+00:00"))
-                    if med.tzinfo is None:
-                        med = med.replace(tzinfo=timezone.utc)
-                    if med < now:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
-            prices = m.get("outcomePrices", '["0.5","0.5"]')
-            if isinstance(prices, str):
-                prices = json.loads(prices)
-            yes_price = float(prices[0]) if prices else 0.5
-            slug = m.get("slug", "")
-            seen_slugs.add(slug)
-            markets_info.append({
-                "slug": slug,
-                "question": m.get("question", ""),
-                "question_zh": translate_title(m.get("question", "")),
-                "yes_price": yes_price,
-                "token_ids": json.loads(m["clobTokenIds"]) if isinstance(m.get("clobTokenIds"), str) else m.get("clobTokenIds", []),
-                "volume": float(m.get("volume") or 0),
-                "liquidity": float(m.get("liquidity") or 0),
-                "score": m.get("score", ""),
-                "neg_risk": m.get("negRisk", False),
-                "tick_size": m.get("minimumTickSize", "0.01"),
-            })
+            if not _is_open(m, now):
+                continue
+            info = _normalise_market(m)
+            if not info["token_ids"]:
+                continue
+            markets_info.append(info)
 
         if not markets_info:
             continue
 
+        seen_slugs.add(slug)
+        game_event = is_game_event(event, markets_info)
         results.append({
             "event_slug": event.get("slug", ""),
             "title": event.get("title", ""),
             "title_zh": translate_title(event.get("title", "")),
-            "end_date_bj": to_beijing_time(end_str),
-            "volume_24h": float(event.get("volume24hr") or 0),
+            "end_date_bj": to_beijing_time(event.get("endDate") or event.get("endDateIso")),
+            "start_time_bj": to_beijing_time(event.get("startTime") or event.get("startDate") or event.get("startDateIso")),
+            "volume_24h": _to_float(event.get("volume24hr") or event.get("volume"), 0.0),
+            "liquidity": _to_float(event.get("liquidityClob") or event.get("liquidity"), 0.0),
+            "score": event.get("score", ""),
+            "live": bool(event.get("live")),
+            "period": event.get("period", ""),
             "markets": markets_info,
+            "is_game": game_event,
         })
 
-    # 2. 用 offset 分页扫描单场比赛 markets（72h 内到期）
-    GAME_KW = ["vs", "matchup", "beat", "points", "spread", "handicap",
-                "o/u", "over/under", "completed match", "map winner",
-                "game handicap", "set 1", "first set", "game 1",
-                "match winner", "to win", "winner"]
-    GAME_SPORT_KW = SPORTS_KEYWORDS + [
-        "esports", "lol", "dota", "cs2", "counter-strike", "valorant",
-        "overwatch", "rocket league", "mobile legends", "mlbb",
-        "atp", "wta", "roland garros", "legends cricket",
-        # 新增：网球大满贯
-        "french open", "australian open", "wimbledon", "us open tennis",
-        "grand slam", "atp 1000", "wta 1000", "atp 500", "wta 500",
-        # 新增：其他赛事
-        "olympics", "paris 2024", "world cup", "copa america", "euro 2024"
-    ]
-
-    async def fetch_game_markets():
-        all_games = []
-        for offset in range(0, 2000, 100):  # 最多 20 页，2000 个 markets
-            try:
-                params = {
-                    "active": "true", "closed": "false", "limit": 100,
-                    "order": "volume", "ascending": "false", "offset": str(offset),
-                }
-                resp = await gamma_api.client.get(f"{gamma_api.base}/markets", params=params)
-                resp.raise_for_status()
-                markets = resp.json()
-                if not markets:
-                    break
-                for m in markets:
-                    q = (m.get("question") or "").lower()
-                    slug = m.get("slug", "")
-                    if slug in seen_slugs:
-                        continue
-                    is_game = any(kw in q for kw in GAME_KW)
-                    is_sport = any(kw in q for kw in GAME_SPORT_KW)
-                    if not (is_game and is_sport):
-                        continue
-                    # 72h 内到期，且未过期
-                    end = m.get("endDate") or m.get("endDateIso") or ""
-                    if end:
-                        try:
-                            ed = datetime.fromisoformat(end.replace("Z", "+00:00"))
-                            if ed.tzinfo is None:
-                                ed = ed.replace(tzinfo=timezone.utc)
-                            if ed < now or ed > soon:
-                                continue
-                        except (ValueError, TypeError):
-                            continue
-                    prices = m.get("outcomePrices", '["0.5","0.5"]')
-                    if isinstance(prices, str):
-                        prices = json.loads(prices)
-                    yes_price = float(prices[0]) if prices else 0.5
-                    token_ids = m.get("clobTokenIds", [])
-                    if isinstance(token_ids, str):
-                        token_ids = json.loads(token_ids)
-                    all_games.append({
-                        "slug": slug,
-                        "question": m.get("question", ""),
-                        "question_zh": translate_title(m.get("question", "")),
-                        "yes_price": yes_price,
-                        "token_ids": token_ids,
-                        "volume": float(m.get("volume") or 0),
-                        "liquidity": float(m.get("liquidity") or 0),
-                        "neg_risk": m.get("negRisk", False),
-                        "tick_size": m.get("minimumTickSize", "0.01"),
-                    })
-                    seen_slugs.add(slug)
-            except Exception as e:
-                logger.warning(f"扫描体育市场 offset={offset} 失败: {e}")
-                break
-        return all_games
-
-    game_markets = await fetch_game_markets()
-
-    # 将单场比赛按 event_slug 分组（用 slug 前缀推断）
-    if game_markets:
-        # 每个比赛市场作为独立 event
-        for gm in game_markets:
-            results.append({
-                "event_slug": gm["slug"],
-                "title": gm["question"],
-                "title_zh": gm["question_zh"],
-                "end_date_bj": "",  # 单场比赛不需要显示结束时间
-                "volume_24h": gm["volume"],
-                "markets": [gm],
-                "is_game": True,
-            })
-
-    if db:
-        scan = ScanResult(scan_type="sports", market_data=json.dumps(results, ensure_ascii=False))
-        db.add(scan)
-        await db.commit()
+    results.sort(key=lambda x: (not x.get("is_game"), x.get("end_date_bj") or "99-99 99:99", -x.get("volume_24h", 0)))
+    await _save_scan(db, "sports", results)
 
     return results
