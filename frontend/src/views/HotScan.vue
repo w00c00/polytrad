@@ -63,9 +63,10 @@
         <el-table-column label="NO" width="80">
           <template #default="{ row }">${{ row.no_price.toFixed(3) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100">
+        <el-table-column label="操作" width="160">
           <template #default="{ row }">
-            <el-button size="small" type="success" @click="quickBuy(row)">买YES</el-button>
+            <el-button size="small" type="success" @click="quickBuy(row, 'YES')">买YES</el-button>
+            <el-button size="small" type="danger" @click="quickBuy(row, 'NO')">买NO</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -111,11 +112,13 @@ function expandMarket(row: any) {
   prediction.value = ''
 }
 
-async function quickBuy(row: any) {
+async function quickBuy(row: any, direction: string = 'YES') {
   if (!row.token_ids?.length) return
+  const tokenId = direction === 'NO' ? row.token_ids[1] : row.token_ids[0]
+  if (!tokenId) { ElMessage.warning('缺少对应方向的 token'); return }
   try {
     const resp = await hotApi.order({
-      token_id: row.token_ids[0],
+      token_id: tokenId,
       side: 'BUY',
       order_type: 'GTC',
       tick_size: row.tick_size || '0.01',
@@ -123,7 +126,7 @@ async function quickBuy(row: any) {
       usdc_amount: orderAmount.value,
     })
     const d = resp.data
-    ElMessage.success(`下单成功: $${orderAmount.value} → ${d.size} 份 @ $${d.price}`)
+    ElMessage.success(`买入 ${direction} 成功: $${orderAmount.value} → ${d.size} 份 @ $${d.price}`)
   } catch (err: any) {
     const raw = err?.response?.data?.detail || err?.message || '未知错误'
     ElMessage.error({ message: `下单失败: ${raw}`, duration: 5000 })
