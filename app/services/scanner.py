@@ -267,16 +267,29 @@ async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_v
 
 
 async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
-    """扫描新创建的政治类市场（只返回未过期的）"""
+    """扫描政治类市场（分页扫描 500 个事件，过滤政治关键词）"""
     now = datetime.now(timezone.utc)
-    recent_cutoff = now - timedelta(days=14)  # 只保留最近 14 天创建的市场
 
-    # P0 #23: 按创建时间排序，优先返回最新创建的市场；增加 limit 到 200
-    events = await gamma_api.get_events(order="creationDate", ascending=False, limit=200)
+    # Gamma API 每页最多 100 条，用 offset 分页扫描 500 个事件
+    events = []
+    for offset in range(0, 500, 100):
+        try:
+            resp = await gamma_api.client.get(f"{gamma_api.base}/events", params={
+                "active": "true", "closed": "false",
+                "order": "volume24hr", "ascending": "false",
+                "limit": 100, "offset": offset,
+            })
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            events.extend(batch)
+        except Exception:
+            break
 
     results = []
     for event in events:
-        # P0 #23: 过滤已过期事件
+        # 过滤已过期事件
         end_str = event.get("endDate") or event.get("endDateIso") or ""
         if end_str:
             try:
@@ -288,19 +301,15 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
             except (ValueError, TypeError):
                 pass
 
-        # P0 #23: 按创建时间过滤，排除老市场（超过 14 天没更新视为老市场）
-        created_str = event.get("createdAt") or ""
-        try:
-            created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            if created < recent_cutoff:
-                continue
-        except (ValueError, TypeError):
-            pass
-
         title = (event.get("title") or "").lower()
-        tags = [str(t).lower() for t in (event.get("tags") or [])]
+        tags_raw = event.get("tags") or []
+        # tags 是 dict 列表，提取 label 字段
+        tags = []
+        for t in tags_raw:
+            if isinstance(t, dict):
+                tags.append((t.get("label") or "").lower())
+            else:
+                tags.append(str(t).lower())
         desc = (event.get("description") or "").lower()
         combined = title + " " + desc + " " + " ".join(tags)
 
@@ -311,7 +320,6 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
         if any(kw in combined for kw in CHINA_KEYWORDS):
             continue
 
-        # P0 #23: 至少有一个市场有成交量，才算新市场
         markets_info = []
         for m in event.get("markets", []):
             # 过滤单个 market 已过期
