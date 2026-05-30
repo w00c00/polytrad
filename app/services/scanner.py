@@ -267,8 +267,9 @@ async def scan_hot_markets(db: AsyncSession, hours_until_expiry: int = 24, min_v
 
 
 async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
-    """扫描政治类市场（分页扫描 500 个事件，过滤政治关键词）"""
+    """扫描政治类市场（分页扫描 500 个事件，过滤政治关键词 + 30 天内创建）"""
     now = datetime.now(timezone.utc)
+    recent_cutoff = now - timedelta(days=30)  # 只保留 30 天内创建的市场
 
     # Gamma API 每页最多 100 条，用 offset 分页扫描 500 个事件
     events = []
@@ -297,6 +298,18 @@ async def scan_new_political_markets(db: AsyncSession) -> list[dict]:
                 if ed.tzinfo is None:
                     ed = ed.replace(tzinfo=timezone.utc)
                 if ed < now:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        # 过滤 30 天前创建的市场
+        created_str = event.get("createdAt") or ""
+        if created_str:
+            try:
+                created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created < recent_cutoff:
                     continue
             except (ValueError, TypeError):
                 pass
