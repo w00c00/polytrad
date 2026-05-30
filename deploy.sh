@@ -15,6 +15,43 @@ fi
 # 2. 设置项目
 cd /opt/polytrad || cd "$(dirname "$0")"
 
+# 生产数据保护：数据库和密钥不应该跟随代码同步被覆盖。
+mkdir -p /var/lib/polytrad /etc/polytrad /opt/polytrad/backups
+chown -R www-data:www-data /var/lib/polytrad 2>/dev/null || true
+
+if [ -f /opt/polytrad/polytrad.db ] && [ ! -f /var/lib/polytrad/polytrad.db ]; then
+    echo "迁移现有数据库到 /var/lib/polytrad/polytrad.db"
+    cp /opt/polytrad/polytrad.db /var/lib/polytrad/polytrad.db
+    chown www-data:www-data /var/lib/polytrad/polytrad.db 2>/dev/null || true
+fi
+
+if [ -f /var/lib/polytrad/polytrad.db ]; then
+    ts=$(date +%Y%m%d-%H%M%S)
+    cp /var/lib/polytrad/polytrad.db "/opt/polytrad/backups/polytrad-$ts.db"
+    echo "已备份生产数据库: /opt/polytrad/backups/polytrad-$ts.db"
+fi
+
+if [ ! -f /etc/polytrad/polytrad.env ]; then
+    if [ -f /opt/polytrad/.env ]; then
+        cp /opt/polytrad/.env /etc/polytrad/polytrad.env
+        echo "已复制现有 .env 到 /etc/polytrad/polytrad.env"
+    else
+        cat > /etc/polytrad/polytrad.env << EOF
+POLYTRAD_MASTER_KEY=$(openssl rand -hex 32)
+JWT_SECRET=$(openssl rand -hex 32)
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=$(openssl rand -hex 12)
+DATABASE_URL=sqlite+aiosqlite:////var/lib/polytrad/polytrad.db
+POLYMARKET_CHAIN_ID=137
+EOF
+        echo "已创建 /etc/polytrad/polytrad.env，请保存其中的初始 ADMIN_PASSWORD"
+    fi
+fi
+
+if ! grep -q '^DATABASE_URL=' /etc/polytrad/polytrad.env; then
+    echo "DATABASE_URL=sqlite+aiosqlite:////var/lib/polytrad/polytrad.db" >> /etc/polytrad/polytrad.env
+fi
+
 # 创建 venv
 python3 -m venv venv
 source venv/bin/activate
@@ -36,7 +73,7 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/opt/polytrad
-EnvironmentFile=/opt/polytrad/.env
+EnvironmentFile=/etc/polytrad/polytrad.env
 ExecStart=/opt/polytrad/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
@@ -77,7 +114,8 @@ systemctl start polytrad
 systemctl restart nginx
 
 echo "=== 部署完成 ==="
-echo "1. 编辑 .env 文件: nano /opt/polytrad/.env"
-echo "2. 修改 nginx 配置中的 YOUR_DOMAIN"
-echo "3. 运行 certbot --nginx 获取 SSL 证书"
-echo "4. 访问 http://YOUR_DOMAIN"
+echo "1. 编辑生产环境变量: nano /etc/polytrad/polytrad.env"
+echo "2. 生产数据库: /var/lib/polytrad/polytrad.db"
+echo "3. 修改 nginx 配置中的 YOUR_DOMAIN"
+echo "4. 运行 certbot --nginx 获取 SSL 证书"
+echo "5. 访问 http://YOUR_DOMAIN 或 http://YOUR_DOMAIN/m"

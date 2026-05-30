@@ -141,6 +141,9 @@ JWT_SECRET=$(openssl rand -hex 32)
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your-secure-password
 
+# VPS 生产环境建议把数据库放到代码目录外，避免同步代码时覆盖用户/钱包数据
+DATABASE_URL=sqlite+aiosqlite:////var/lib/polytrad/polytrad.db
+
 # Polymarket 链 ID（137=主网，80002=测试网）
 POLYMARKET_CHAIN_ID=137
 ```
@@ -178,6 +181,18 @@ cd ..
 ./start.sh
 # 访问: http://localhost:8000
 ```
+
+### VPS 同步注意事项
+
+不要直接把本地项目目录完整覆盖到 VPS，否则本地的 `polytrad.db`、`.env` 可能覆盖生产库和生产密钥，导致用户、密码、钱包配置“重置”。推荐使用内置同步脚本：
+
+```bash
+./scripts/sync-to-vps.sh root@YOUR_SERVER:/opt/polytrad/
+```
+
+该脚本会排除 `.env`、`*.db`、`data/`、`venv/`、`frontend/node_modules/`、`frontend/dist/` 等运行时文件。VPS 生产数据库建议固定在 `/var/lib/polytrad/polytrad.db`，生产环境变量放在 `/etc/polytrad/polytrad.env`。
+
+桌面版和移动版是同一个前端应用的两套路由：桌面版访问 `/`，移动版访问 `/m`。后端会把 `/m/*` 也返回同一个 `index.html`，由前端路由加载移动版页面。
 
 首次启动会自动：
 - 创建数据库表
@@ -330,7 +345,7 @@ certbot --nginx -d your-domain.com
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `POLYTRAD_MASTER_KEY` | 是 | - | 加密主密钥，生成后不可更改 |
-| `DATABASE_URL` | 否 | `sqlite+aiosqlite:///./polytrad.db` | 数据库连接字符串 |
+| `DATABASE_URL` | 否 | `sqlite+aiosqlite:///./polytrad.db` | 数据库连接字符串；VPS 推荐 `sqlite+aiosqlite:////var/lib/polytrad/polytrad.db` |
 | `JWT_SECRET` | 是 | - | JWT 签名密钥 |
 | `ADMIN_USERNAME` | 否 | `admin` | 初始管理员用户名 |
 | `ADMIN_PASSWORD` | 是 | - | 初始管理员密码 |
@@ -375,7 +390,8 @@ npm run dev
 如需重置数据库：
 
 ```bash
-rm polytrad.db
+rm polytrad.db  # 本地开发
+# VPS 生产环境是 /var/lib/polytrad/polytrad.db，删除前务必先备份
 systemctl restart polytrad  # 或重新启动服务
 ```
 

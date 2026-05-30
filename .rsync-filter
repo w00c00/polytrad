@@ -1,0 +1,20 @@
+# Runtime state. Never overwrite production data during VPS sync.
+- .env
+- .env.*
+- polytrad.db
+- *.db
+- *.db-wal
+- *.db-shm
+- data/
+- backups/
+
+# Local build/dependency/cache output.
+- venv/
+- .venv/
+- __pycache__/
+- *.pyc
+- frontend/node_modules/
+- frontend/dist/
+- .git/
+- .DS_Store
+- *.log

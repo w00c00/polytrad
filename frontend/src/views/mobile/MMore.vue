@@ -15,7 +15,7 @@
         </div>
         <div class="menu-item" @click="$router.push('/m/arbitrage')">
           <span class="menu-icon">⚖️</span>
-          <span class="menu-label">事件套利</span>
+          <span class="menu-label">机会中心</span>
           <span class="menu-arrow">›</span>
         </div>
         <div class="menu-item" @click="$router.push('/m/settings')">
