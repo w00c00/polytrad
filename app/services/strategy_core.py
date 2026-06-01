@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from app.services.enum_compat import StrEnum
 
 
 class CatalystReliability(StrEnum):
