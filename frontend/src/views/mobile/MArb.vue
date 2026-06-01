@@ -124,7 +124,7 @@
         <template v-else-if="tab === 'schedule'">
           <div class="card-title">{{ item.title_zh || item.title }}</div>
           <div class="card-info">
-            <span>{{ item.league || '长期盘' }}</span>
+            <span>{{ item.league || item.league_guess || '长期盘' }}</span>
             <span>{{ item.game_status }}</span>
             <span>{{ item.risk_level }}</span>
           </div>
@@ -220,10 +220,10 @@ async function loadData() {
       const resp = await opportunityApi.newsCatalysts({ category: 'politics', lookback_hours: 48, max_candidates: 16 })
       data = resp.data || []
     } else if (tab.value === 'schedule') {
-      const resp = await opportunityApi.sportsSchedule({ days_ahead: 7, max_candidates: 80 })
+      const resp = await opportunityApi.sportsSchedule({ days_ahead: 7, max_candidates: 100, include_unsupported: true })
       data = resp.data || []
     } else if (tab.value === 'smart') {
-      const resp = await opportunityApi.smartMoney({ lookback_hours: 24, limit: 400, min_notional: 50, top_wallets: 12 })
+      const resp = await opportunityApi.smartMoney({ lookback_hours: 72, limit: 2500, min_notional: 10, top_wallets: 24 })
       data = resp.data?.wallets || []
     }
     dataMap.value = { ...dataMap.value, [tab.value]: data }

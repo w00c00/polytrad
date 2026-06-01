@@ -387,7 +387,7 @@
               </div>
             </div>
           </template>
-          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="新闻雷达提示" description="新闻热度只代表有催化，不代表 YES 或 NO 哪边更便宜；快捷买入会走 AI 风控确认和 FOK，建议小额验证。" />
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="新闻雷达提示" description="列表按市场到期时间从近到远排列；新闻热度只代表有催化，不代表 YES 或 NO 哪边更便宜；快捷买入会走 AI 风控确认和 FOK。" />
           <el-table :data="newsResults" size="small" v-loading="newsLoading" max-height="560">
             <el-table-column label="市场" min-width="260" show-overflow-tooltip>
               <template #default="{ row }">
@@ -432,17 +432,18 @@
               <div>
                 <span style="margin-right:8px">未来天数</span>
                 <el-input-number v-model="scheduleParams.days_ahead" :min="1" :max="30" size="small" style="width:100px;margin-right:8px" />
+                <el-switch v-model="scheduleParams.include_unsupported" size="small" active-text="显示小联赛/电竞" style="margin-right:8px" />
                 <el-button size="small" type="primary" :loading="scheduleLoading" @click="loadSchedule">匹配</el-button>
               </div>
             </div>
           </template>
-          <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px" title="赛程过滤口径" description="该面板用 ESPN 公开赛程匹配 NBA/NHL/MLB/NFL 单场盘，用来发现已完赛、进行中或未匹配的危险盘；冠军/长期盘不会按单场过滤。" />
+          <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px" title="赛程过滤口径" description="ESPN 可覆盖的核心联赛会尝试匹配具体赛程；小联赛、电竞、板球会单独标为非 ESPN 覆盖，关闭开关可只看核心联赛。" />
           <el-table :data="scheduleResults" size="small" v-loading="scheduleLoading" max-height="560">
             <el-table-column label="Polymarket 事件" min-width="260" show-overflow-tooltip>
               <template #default="{ row }">{{ row.title_zh || row.title }}</template>
             </el-table-column>
             <el-table-column label="联赛" width="80">
-              <template #default="{ row }">{{ row.league || '-' }}</template>
+              <template #default="{ row }">{{ row.league || row.league_guess || '-' }}</template>
             </el-table-column>
             <el-table-column label="匹配比赛" min-width="170" show-overflow-tooltip>
               <template #default="{ row }">{{ row.game || row.teams || '-' }}</template>
@@ -471,11 +472,15 @@
                 <el-input-number v-model="smartParams.lookback_hours" :min="1" :max="168" size="small" style="width:90px;margin-right:8px" />
                 <span style="margin-right:8px">最小额</span>
                 <el-input-number v-model="smartParams.min_notional" :min="1" :max="100000" size="small" style="width:110px;margin-right:8px" />
+                <span style="margin-right:8px">样本</span>
+                <el-input-number v-model="smartParams.limit" :min="50" :max="5000" :step="500" size="small" style="width:120px;margin-right:8px" />
+                <span style="margin-right:8px">钱包</span>
+                <el-input-number v-model="smartParams.top_wallets" :min="3" :max="80" :step="5" size="small" style="width:100px;margin-right:8px" />
                 <el-button size="small" type="primary" :loading="smartLoading" @click="loadSmartMoney">扫描</el-button>
               </div>
             </div>
           </template>
-          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="跟单提示" :description="smartReport?.note || '聪明钱可能是对冲、做市或分批交易，只做观察信号；跟买只允许最近 BUY token 小额 FOK。'" />
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="跟单提示" :description="smartReport?.note || '会分页抓取更多公开成交并去重；聪明钱可能是对冲、做市或分批交易，只做观察信号。'" />
           <el-table :data="smartWallets" size="small" v-loading="smartLoading" max-height="560">
             <el-table-column type="expand">
               <template #default="{ row }">
@@ -715,11 +720,11 @@ const newsParams = ref({ category: 'politics', lookback_hours: 48, max_candidate
 const newsResults = ref<any[]>([])
 
 const scheduleLoading = ref(false)
-const scheduleParams = ref({ days_ahead: 7, max_candidates: 120 })
+const scheduleParams = ref({ days_ahead: 7, max_candidates: 120, include_unsupported: true })
 const scheduleResults = ref<any[]>([])
 
 const smartLoading = ref(false)
-const smartParams = ref({ lookback_hours: 24, limit: 500, min_notional: 50, top_wallets: 15 })
+const smartParams = ref({ lookback_hours: 72, limit: 2500, min_notional: 10, top_wallets: 30 })
 const smartReport = ref<any>(null)
 const smartWallets = ref<any[]>([])
 

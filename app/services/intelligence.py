@@ -177,10 +177,11 @@ async def scan_news_catalysts(
         return cached
 
     now = datetime.now(timezone.utc)
+    pool_size = min(max_candidates * 3, 240)
     markets = await _fetch_gamma_pages(
         "markets",
         {"order": "volume24hr", "ascending": "false"},
-        max_pages=max(3, (max_candidates + 49) // 50),
+        max_pages=max(3, (pool_size + 99) // 100),
     )
 
     candidates = []
@@ -218,7 +219,7 @@ async def scan_news_catalysts(
             "end_date_bj": to_beijing_time(market.get("endDate") or market.get("endDateIso")),
             "end_ts": _parse_dt(market.get("endDate") or market.get("endDateIso")),
         })
-        if len(candidates) >= max_candidates:
+        if len(candidates) >= pool_size:
             break
 
     sem = asyncio.Semaphore(4)
@@ -253,7 +254,13 @@ async def scan_news_catalysts(
         return item
 
     results = await asyncio.gather(*(attach_news(c) for c in candidates))
-    results.sort(key=lambda x: (x.get("signal_score", 0), x.get("news_count", 0), x.get("volume_24h", 0)), reverse=True)
+    far_future = now + timedelta(days=3650)
+    results.sort(key=lambda x: (
+        x.get("end_ts") or far_future,
+        -x.get("signal_score", 0),
+        -x.get("news_count", 0),
+        -x.get("volume_24h", 0),
+    ))
     return _cache_set(cache_key, results[:max_candidates])
 
 
@@ -263,6 +270,14 @@ ESPN_LEAGUES = {
     "nfl": ("football", "nfl", "NFL"),
     "mlb": ("baseball", "mlb", "MLB"),
     "nhl": ("hockey", "nhl", "NHL"),
+    "eng.1": ("soccer", "eng.1", "英超"),
+    "esp.1": ("soccer", "esp.1", "西甲"),
+    "ita.1": ("soccer", "ita.1", "意甲"),
+    "ger.1": ("soccer", "ger.1", "德甲"),
+    "fra.1": ("soccer", "fra.1", "法甲"),
+    "uefa.champions": ("soccer", "uefa.champions", "欧冠"),
+    "usa.1": ("soccer", "usa.1", "MLS"),
+    "jpn.1": ("soccer", "jpn.1", "J1"),
 }
 
 
@@ -346,10 +361,52 @@ def _match_game(title: str, games: list[dict]) -> dict | None:
     return best if best_score >= 2 else None
 
 
-async def scan_sports_schedule_radar(max_candidates: int = 120, days_ahead: int = 7) -> list[dict]:
+def _schedule_bucket(title: str) -> tuple[str, bool]:
+    text = _normalise_text(title)
+    esports = ["counter strike", "cs2", "lol", "league of legends", "dota", "valorant", "esports", "bo3", "bo5"]
+    cricket = ["t20", "cricket", "blast", "odi", "test match", "wicket", "six", "qualifier"]
+    tennis = ["tennis", "atp", "wta", "roland garros", "wimbledon", "us open", "australian open"]
+    combat = ["ufc", "mma", "boxing"]
+    racing = ["f1", "formula 1", "nascar"]
+    if any(k in text for k in esports):
+        return "电竞", False
+    if any(k in text for k in cricket):
+        return "板球", False
+    if any(k in text for k in tennis):
+        return "网球", False
+    if any(k in text for k in combat):
+        return "格斗", False
+    if any(k in text for k in racing):
+        return "赛车", False
+    if "nba" in text:
+        return "NBA", True
+    if "nfl" in text:
+        return "NFL", True
+    if "mlb" in text:
+        return "MLB", True
+    if "nhl" in text:
+        return "NHL", True
+    top_soccer = [
+        "premier league", "la liga", "serie a", "bundesliga", "ligue 1", "champions league", "mls",
+        "arsenal", "chelsea", "liverpool", "manchester city", "manchester united", "tottenham",
+        "real madrid", "barcelona", "atletico", "bayern", "borussia dortmund", "psg",
+        "inter milan", "ac milan", "juventus", "napoli",
+    ]
+    if any(k in text for k in top_soccer):
+        return "足球", True
+    if " fc" in f" {text}" or " soccer" in text:
+        return "足球小联赛", False
+    return "其他体育", False
+
+
+async def scan_sports_schedule_radar(
+    max_candidates: int = 120,
+    days_ahead: int = 7,
+    include_unsupported: bool = False,
+) -> list[dict]:
     max_candidates = min(max(int(max_candidates or 120), 20), 300)
     days_ahead = min(max(int(days_ahead or 7), 1), 30)
-    cache_key = f"schedule:{max_candidates}:{days_ahead}"
+    cache_key = f"schedule:{max_candidates}:{days_ahead}:{int(bool(include_unsupported))}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -361,6 +418,9 @@ async def scan_sports_schedule_radar(max_candidates: int = 120, days_ahead: int 
     results = []
     for event in sports_events[:max_candidates]:
         title = event.get("title") or ""
+        bucket, espn_supported = _schedule_bucket(title)
+        if not espn_supported and not include_unsupported:
+            continue
         matched = _match_game(title, games)
         is_game = bool(event.get("is_game") or " vs " in title.lower() or " vs. " in title.lower())
         if matched:
@@ -376,20 +436,27 @@ async def scan_sports_schedule_radar(max_candidates: int = 120, days_ahead: int 
             teams = " vs ".join(t.get("short_name") or t.get("display_name") or t.get("abbreviation") for t in matched.get("teams", [])[:2])
             game_status = matched.get("status") or matched.get("state") or "-"
         else:
-            if is_game:
+            if not espn_supported:
+                risk_level = "info"
+                action = f"{bucket}暂不走 ESPN 匹配；按市场到期和官方赛程手动核对"
+                game_status = "非ESPN覆盖"
+            elif is_game:
                 risk_level = "warning"
-                action = "未匹配到 ESPN 赛程，可能是电竞/小联赛/标题格式不同；下单前手动核对"
+                action = f"{bucket}未匹配到 ESPN 赛程；可能是小联赛或标题格式不同，下单前核对官方赛程"
+                game_status = "ESPN未匹配"
             else:
                 risk_level = "info"
                 action = "更像冠军/奖项/长期盘，不按单场赛程过滤"
+                game_status = "长期盘"
             teams = ""
-            game_status = "未匹配"
         results.append({
             "event_slug": event.get("event_slug", ""),
             "title": title,
             "title_zh": event.get("title_zh") or translate_title(title),
             "is_game": is_game,
             "league": matched.get("league") if matched else "",
+            "league_guess": bucket,
+            "espn_supported": espn_supported,
             "game": matched.get("short_name") or matched.get("name") if matched else "",
             "teams": teams,
             "game_time_bj": matched.get("date_bj") if matched else event.get("start_time_bj") or event.get("end_date_bj"),
@@ -406,6 +473,37 @@ async def scan_sports_schedule_radar(max_candidates: int = 120, days_ahead: int 
     priority = {"danger": 0, "warning": 1, "success": 2, "info": 3}
     results.sort(key=lambda x: (priority.get(x["risk_level"], 9), x.get("game_time_bj") or "99-99 99:99", -x.get("volume_24h", 0)))
     return _cache_set(cache_key, results)
+
+
+async def _recent_trade_pages(total_limit: int) -> list[dict]:
+    page_size = 500
+    offsets = list(range(0, total_limit, page_size))
+    sem = asyncio.Semaphore(4)
+
+    async def fetch(offset: int) -> list[dict]:
+        async with sem:
+            try:
+                return await data_api.get_recent_trades(limit=min(page_size, total_limit - offset), offset=offset)
+            except Exception:
+                return []
+
+    pages = await asyncio.gather(*(fetch(offset) for offset in offsets))
+    seen = set()
+    trades = []
+    for page in pages:
+        for trade in page:
+            key = (
+                trade.get("transactionHash"),
+                trade.get("asset"),
+                trade.get("timestamp"),
+                trade.get("proxyWallet"),
+                trade.get("side"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            trades.append(trade)
+    return trades
 
 
 def _closed_position_stats(items: list[dict]) -> dict:
@@ -446,9 +544,9 @@ async def scan_smart_money(
     top_wallets: int = 15,
 ) -> dict:
     lookback_hours = min(max(int(lookback_hours or 24), 1), 168)
-    limit = min(max(int(limit or 500), 50), 1000)
+    limit = min(max(int(limit or 500), 50), 5000)
     min_notional = min(max(float(min_notional or 50), 1.0), 100000.0)
-    top_wallets = min(max(int(top_wallets or 15), 3), 50)
+    top_wallets = min(max(int(top_wallets or 15), 3), 80)
     cache_key = f"smart:{lookback_hours}:{limit}:{min_notional}:{top_wallets}"
     cached = _cache_get(cache_key)
     if cached is not None:
@@ -456,7 +554,7 @@ async def scan_smart_money(
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=lookback_hours)
-    trades = await data_api.get_recent_trades(limit=limit)
+    trades = await _recent_trade_pages(limit)
     groups: dict[str, dict] = {}
     large_trades = []
     for trade in trades:
@@ -555,6 +653,7 @@ async def scan_smart_money(
     result = {
         "generated_at_bj": datetime.now(BJT).strftime("%m-%d %H:%M"),
         "lookback_hours": lookback_hours,
+        "sampled_trades": len(trades),
         "wallets": wallets,
         "large_trades": large_trades[:50],
         "note": "该面板基于 Polymarket 公开成交流和公开已平仓数据估算，只能用于观察，不能替代独立判断。",

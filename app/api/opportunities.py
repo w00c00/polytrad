@@ -155,17 +155,18 @@ async def news_catalysts(
 async def sports_schedule(
     days_ahead: int = Query(7, ge=1, le=30),
     max_candidates: int = Query(120, ge=20, le=300),
+    include_unsupported: bool = Query(True),
     user: User = Depends(get_current_user),
 ):
-    return await scan_sports_schedule_radar(max_candidates, days_ahead)
+    return await scan_sports_schedule_radar(max_candidates, days_ahead, include_unsupported)
 
 
 @router.get("/smart-money")
 async def smart_money(
     lookback_hours: int = Query(24, ge=1, le=168),
-    limit: int = Query(500, ge=50, le=1000),
+    limit: int = Query(2500, ge=50, le=5000),
     min_notional: float = Query(50, ge=1, le=100000),
-    top_wallets: int = Query(15, ge=3, le=50),
+    top_wallets: int = Query(30, ge=3, le=80),
     user: User = Depends(get_current_user),
 ):
     return await scan_smart_money(lookback_hours, limit, min_notional, top_wallets)
