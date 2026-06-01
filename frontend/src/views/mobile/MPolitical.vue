@@ -9,10 +9,16 @@
       <div v-else-if="events.length === 0" class="empty-hint">暂无新事件</div>
       <div v-for="e in events" :key="e.event_slug" class="card">
         <div class="card-title">{{ e.title_zh || e.title }}</div>
-        <div class="card-meta" v-if="e.created_at_bj || e.start_date_bj">创建: {{ e.created_at_bj || e.start_date_bj }}</div>
+        <div class="card-meta">
+          <span v-if="e.created_at_bj || e.start_date_bj">创建: {{ e.created_at_bj || e.start_date_bj }}</span>
+          <span>到期: {{ e.end_date_bj || '-' }}</span>
+        </div>
         <div class="market-list">
-          <div v-for="m in e.markets" :key="m.slug" class="market-row" @click="buyMarket(m)">
-            <span class="m-name">{{ m.question_zh || m.question }}</span>
+          <div v-for="m in e.markets" :key="m.slug" class="market-row" @click="buyMarket(m, e)">
+            <span class="m-name">
+              <span>{{ m.question_zh || m.question }}</span>
+              <small>到期 {{ m.end_date_bj || e.end_date_bj || '-' }}</small>
+            </span>
             <span class="m-price">${{ (m.yes_price || 0).toFixed(3) }}</span>
           </div>
         </div>
@@ -26,6 +32,7 @@
           <span class="sheet-close" @click="showSheet = false">✕</span>
         </div>
         <div class="sheet-body">
+          <div class="sheet-expiry">到期: {{ selectedMarket?.end_date_bj || selectedEvent?.end_date_bj || '-' }}</div>
           <div class="field">
             <label>方向</label>
             <div class="dir-btns">
@@ -55,6 +62,7 @@ const loading = ref(false)
 const events = ref<any[]>([])
 const showSheet = ref(false)
 const selectedMarket = ref<any>(null)
+const selectedEvent = ref<any>(null)
 const amount = ref(10)
 const ordering = ref(false)
 const direction = ref('YES')
@@ -67,8 +75,9 @@ async function loadData() {
   } catch {} finally { loading.value = false }
 }
 
-function buyMarket(m: any) {
+function buyMarket(m: any, e: any) {
   selectedMarket.value = m
+  selectedEvent.value = e
   showSheet.value = true
 }
 
@@ -107,11 +116,13 @@ onMounted(loadData)
 .list { display: flex; flex-direction: column; gap: 8px; }
 .card { background: #fff; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .card-title { font-size: 14px; font-weight: bold; color: #303133; margin-bottom: 6px; }
-.card-meta { font-size: 12px; color: #909399; margin-bottom: 8px; }
+.card-meta { font-size: 12px; color: #909399; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 8px 12px; }
 .market-list { border-top: 1px solid #f0f0f0; padding-top: 8px; }
 .market-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; }
 .market-row:last-child { border-bottom: none; }
-.m-name { font-size: 13px; color: #303133; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-name { font-size: 13px; color: #303133; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.m-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-name small { color: #f56c6c; font-size: 11px; font-weight: normal; }
 .m-price { font-size: 13px; font-weight: bold; color: #409eff; margin-left: 8px; }
 .empty-hint { text-align: center; color: #909399; padding: 40px 0; font-size: 14px; }
 .sheet-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100; display: flex; align-items: flex-end; }
@@ -120,6 +131,7 @@ onMounted(loadData)
 .sheet-header { display: flex; justify-content: space-between; padding: 16px; font-size: 16px; font-weight: bold; border-bottom: 1px solid #f0f0f0; }
 .sheet-close { font-size: 20px; color: #909399; cursor: pointer; }
 .sheet-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.sheet-expiry { font-size: 12px; color: #f56c6c; line-height: 1.4; }
 .field label { display: block; font-size: 13px; color: #606266; margin-bottom: 6px; }
 .dir-btns { display: flex; gap: 8px; }
 .dir-btn { flex: 1; padding: 12px; border: 2px solid #dcdfe6; border-radius: 8px; background: #fff; font-size: 14px; font-weight: bold; cursor: pointer; }

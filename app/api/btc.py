@@ -8,6 +8,8 @@ from app.schemas import OrderReq, MarketOrderReq, SellReq, CancelOrderReq
 from app.services.polymarket import gamma_api, clob_api, to_beijing_time, translate_title
 from app.services.trading import place_limit_order, place_market_order, sell_position, cancel_order, get_open_orders, cancel_all_orders, get_usdc_balance
 from app.services.scanner import scan_btc_short_markets
+from app.services.portfolio_doctor import build_portfolio_doctor, portfolio_doctor_markdown, recent_local_trades
+from app.services.notification import notify_user
 
 router = APIRouter(prefix="/api/btc", tags=["BTC短周期"])
 
@@ -22,6 +24,12 @@ async def list_btc_markets(user: User = Depends(get_current_user)):
         m for m in markets
         if any(kw in (m.get("question", "") + m.get("slug", "")).lower() for kw in ["btc", "bitcoin"])
     ]
+    for m in btc_markets:
+        if m.get("question"):
+            m["question_zh"] = translate_title(m["question"])
+        if m.get("question") and not m.get("title_zh"):
+            m["title_zh"] = translate_title(m["question"])
+        m["end_date_bj"] = to_beijing_time(m.get("endDate") or m.get("endDateIso"))
     return {"short_markets": short_markets, "markets": btc_markets}
 
 
@@ -43,6 +51,10 @@ async def get_btc_market(slug: str, user: User = Depends(get_current_user)):
     token_ids = market.get("clobTokenIds", [])
     if isinstance(token_ids, str):
         token_ids = json.loads(token_ids)
+    if market.get("question"):
+        market["question_zh"] = translate_title(market["question"])
+        market["title_zh"] = translate_title(market["question"])
+    market["end_date_bj"] = to_beijing_time(market.get("endDate") or market.get("endDateIso"))
 
     orderbook = {}
     spread_info = {}
@@ -162,6 +174,30 @@ async def btc_positions(user: User = Depends(get_current_user), db: AsyncSession
         balance = {}
 
     return {"positions": positions, "balance": balance}
+
+
+@router.get("/portfolio-doctor")
+async def portfolio_doctor(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """仓位医生：组合风险、到期、流动性和交易复盘"""
+    try:
+        report = await build_portfolio_doctor(user, db)
+        report["local_trades"] = await recent_local_trades(user, db, limit=30)
+        return report
+    except Exception as e:
+        raise HTTPException(400, f"仓位医生失败: {e}")
+
+
+@router.post("/portfolio-doctor/notify")
+async def notify_portfolio_doctor(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """推送仓位医生报告"""
+    try:
+        report = await build_portfolio_doctor(user, db)
+        summary = report.get("summary") or {}
+        title = f"仓位医生 - {summary.get('verdict', '复盘')} / {summary.get('positions', 0)} 仓"
+        await notify_user(db, user, title, portfolio_doctor_markdown(report))
+        return {"success": True, "message": "仓位医生报告已推送", "summary": summary}
+    except Exception as e:
+        raise HTTPException(400, f"仓位医生推送失败: {e}")
 
 
 @router.get("/orders")

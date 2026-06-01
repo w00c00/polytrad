@@ -17,7 +17,10 @@
         </div>
         <div class="event-markets" v-if="selectedEvent?.event_slug === e.event_slug">
           <div v-for="m in e.markets" :key="m.slug" class="market-row" @click.stop="buyMarket(m)">
-            <span class="m-name">{{ m.question_zh || m.question }}</span>
+            <span class="m-name">
+              <span>{{ m.question_zh || m.question }}</span>
+              <small>到期 {{ m.end_date_bj || e.end_date_bj || '-' }}</small>
+            </span>
             <span class="m-price">${{ (m.yes_price || 0).toFixed(3) }}</span>
           </div>
         </div>
@@ -32,6 +35,7 @@
           <span class="sheet-close" @click="showSheet = false">✕</span>
         </div>
         <div class="sheet-body">
+          <div class="sheet-expiry">到期: {{ selectedMarket?.end_date_bj || selectedEvent?.end_date_bj || '-' }}</div>
           <div class="sheet-field">
             <label>方向</label>
             <div class="dir-btns">
@@ -175,7 +179,9 @@ onMounted(loadEvents)
 }
 
 .market-row:last-child { border-bottom: none; }
-.m-name { font-size: 13px; color: #303133; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-name { font-size: 13px; color: #303133; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.m-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-name small { color: #f56c6c; font-size: 11px; font-weight: normal; }
 .m-price { font-size: 13px; font-weight: bold; color: #409eff; margin-left: 8px; }
 
 /* Sheet */
@@ -185,6 +191,7 @@ onMounted(loadEvents)
 .sheet-header { display: flex; justify-content: space-between; padding: 16px; font-size: 16px; font-weight: bold; border-bottom: 1px solid #f0f0f0; }
 .sheet-close { font-size: 20px; color: #909399; cursor: pointer; }
 .sheet-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.sheet-expiry { font-size: 12px; color: #f56c6c; line-height: 1.4; }
 .sheet-field label { display: block; font-size: 13px; color: #606266; margin-bottom: 8px; }
 .dir-btns { display: flex; gap: 8px; }
 .dir-btn { flex: 1; padding: 12px; border: 2px solid #dcdfe6; border-radius: 8px; background: #fff; font-size: 14px; font-weight: bold; cursor: pointer; }

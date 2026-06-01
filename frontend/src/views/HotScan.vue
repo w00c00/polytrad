@@ -65,6 +65,9 @@
         <el-table-column label="NO" width="80">
           <template #default="{ row }">${{ row.no_price.toFixed(3) }}</template>
         </el-table-column>
+        <el-table-column label="到期" width="120">
+          <template #default="{ row }">{{ row.end_date_bj || selectedEvent?.end_date_bj || '-' }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
             <el-button size="small" type="success" @click="quickBuy(row, 'YES')">买YES</el-button>

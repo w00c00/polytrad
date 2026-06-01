@@ -14,6 +14,9 @@
         <el-table-column label="创建时间 (北京)" width="180">
           <template #default="{ row }">{{ row.created_at_bj || row.start_date_bj || '-' }}</template>
         </el-table-column>
+        <el-table-column label="到期 (北京)" width="140">
+          <template #default="{ row }">{{ row.end_date_bj || '-' }}</template>
+        </el-table-column>
         <el-table-column label="市场数" width="80">
           <template #default="{ row }">{{ row.markets?.length || 0 }}</template>
         </el-table-column>
@@ -56,6 +59,9 @@
         </el-table-column>
         <el-table-column label="成交量" width="100">
           <template #default="{ row }">${{ (row.volume || 0).toLocaleString() }}</template>
+        </el-table-column>
+        <el-table-column label="到期" width="120">
+          <template #default="{ row }">{{ row.end_date_bj || selectedEvent?.end_date_bj || '-' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="150">
           <template #default="{ row }">

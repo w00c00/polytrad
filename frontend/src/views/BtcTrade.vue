@@ -50,7 +50,12 @@
           </el-table>
 
           <el-table :data="btcMarkets" size="small" @row-click="selectMarket" v-if="activeTab === 'other'" max-height="400">
-            <el-table-column prop="question" label="市场" show-overflow-tooltip />
+            <el-table-column label="市场" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.question_zh || row.title_zh || row.question }}</template>
+            </el-table-column>
+            <el-table-column label="到期" width="120">
+              <template #default="{ row }">{{ row.end_date_bj || row.endDate_bj || row.endDateIso_bj || '-' }}</template>
+            </el-table-column>
             <el-table-column label="YES" width="80">
               <template #default="{ row }">{{ getPrice(row, 0) }}</template>
             </el-table-column>
@@ -65,6 +70,7 @@
               <el-descriptions-item label="YES 价格">${{ yesPrice.toFixed(3) }}</el-descriptions-item>
               <el-descriptions-item label="NO 价格">${{ noPrice.toFixed(3) }}</el-descriptions-item>
               <el-descriptions-item label="成交量">${{ parseFloat(currentMarket.volume || 0).toLocaleString() }}</el-descriptions-item>
+              <el-descriptions-item v-if="activeTab === 'other'" label="到期时间">{{ currentMarket.end_date_bj || currentMarket.endDate_bj || currentMarket.endDateIso_bj || '-' }}</el-descriptions-item>
             </el-descriptions>
 
             <el-divider>订单簿</el-divider>
@@ -107,7 +113,10 @@
           <div v-if="positions.length > 0" style="font-size:12px;color:#666">
             <div style="font-size:12px;color:#999;margin-bottom:4px">持仓 ({{ positions.length }}) · 总值 ${{ totalPositionValue }}</div>
             <div v-for="p in positions.slice(0, 5)" :key="p.asset" style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;gap:6px">
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">{{ p.title_zh || p.title }}</span>
+              <div style="flex:1;min-width:0">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.title_zh || p.title }}</div>
+                <div style="color:#f56c6c;font-size:11px">到期 {{ p.endDate_bj || p.endDateIso_bj || '-' }}</div>
+              </div>
               <span :style="{ color: parseFloat(p.cashPnl || 0) >= 0 ? '#67c23a' : '#f56c6c', whiteSpace:'nowrap' }">${{ parseFloat(p.currentValue || 0).toFixed(2) }}</span>
               <el-button size="small" type="danger" link @click="quickSell(p)" :loading="sellingAsset === p.asset">卖</el-button>
             </div>

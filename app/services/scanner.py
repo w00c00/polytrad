@@ -2,7 +2,9 @@ import json
 import logging
 import asyncio
 import time
+import re
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.polymarket import gamma_api, clob_api, to_beijing_time, translate_title
 from app.models import ScanResult
@@ -12,6 +14,9 @@ logger = logging.getLogger(__name__)
 # P3 #18: 扫描结果缓存（避免重复点击重复请求 API）
 _scan_cache: dict[str, tuple[float, list]] = {}
 _CACHE_TTL_SECONDS = 120  # 2 分钟
+BASKET_MIN_HOURS_TO_EXPIRY = 6
+BASKET_MIN_BUY_SUM = 0.90
+BASKET_MAX_BUY_SUM = 0.995
 
 
 async def _cached_scan(key: str, scan_func, *args, **kwargs) -> list:
@@ -116,6 +121,62 @@ def _is_open(item: dict, now: datetime) -> bool:
     return True
 
 
+_TERMINAL_RESOLUTION_STATUSES = {
+    "proposed",
+    "disputed",
+    "resolved",
+    "settled",
+    "finalized",
+    "final",
+    "complete",
+    "completed",
+    "closed",
+    "cancelled",
+    "canceled",
+}
+
+
+def _has_resolution_state(item: dict) -> bool:
+    """Gamma 有时 event 未 closed，但子市场已 proposed/resolved；这类不应再当可交易机会。"""
+    for key in ("umaResolutionStatus", "resolutionStatus", "status", "gameStatus"):
+        status = str(item.get(key) or "").strip().lower()
+        if status in _TERMINAL_RESOLUTION_STATUSES:
+            return True
+
+    for key in ("resolved", "settled", "isResolved", "isSettled"):
+        if item.get(key) is True:
+            return True
+
+    prices = _json_list(item.get("outcomePrices"), [])
+    if len(prices) >= 2:
+        normalized = []
+        for value in prices:
+            try:
+                normalized.append(float(value))
+            except (TypeError, ValueError):
+                normalized = []
+                break
+        if normalized and all(p <= 0.00001 or p >= 0.99999 for p in normalized):
+            return True
+
+    return False
+
+
+def _is_placeholder_outcome(market: dict) -> bool:
+    text = _combined_text(market)
+    return bool(re.search(r"\b(player|person|candidate|team)\s+[a-z]{1,3}\b", text))
+
+
+def _is_tradable_market(market: dict, now: datetime) -> bool:
+    if not _is_open(market, now):
+        return False
+    if market.get("acceptingOrders") is False:
+        return False
+    if _has_resolution_state(market):
+        return False
+    return bool(_market_token_ids(market))
+
+
 def _market_yes_price(market: dict) -> float:
     prices = _json_list(market.get("outcomePrices"), ["0.5", "0.5"])
     return _to_float(prices[0], 0.5) if prices else 0.5
@@ -159,11 +220,135 @@ def _normalise_market(market: dict, include_no_price: bool = True) -> dict:
         "tick_size": _market_tick_size(market),
         "sports_market_type": market.get("sportsMarketType"),
         "game_start_bj": to_beijing_time(market.get("gameStartTime") or market.get("eventStartTime")),
+        "end_date_bj": to_beijing_time(market.get("endDate") or market.get("endDateIso")),
         "accepting_orders": market.get("acceptingOrders", True),
     }
     if include_no_price:
         data["no_price"] = 1 - yes_price
     return data
+
+
+def _official_outcome_count(event: dict) -> int:
+    """尽量从 Gamma 事件中提取官方定义的结果数。"""
+    for key in (
+        "totalOutcomes",
+        "total_outcomes",
+        "outcomeCount",
+        "outcomesCount",
+        "totalMarkets",
+        "marketsCount",
+        "marketCount",
+    ):
+        value = event.get(key)
+        try:
+            count = int(value)
+            if count > 0:
+                return count
+        except (TypeError, ValueError):
+            pass
+
+    markets = event.get("markets") or []
+    max_threshold = -1
+    for market in markets:
+        try:
+            max_threshold = max(max_threshold, int(market.get("groupItemThreshold")))
+        except (TypeError, ValueError):
+            continue
+    if max_threshold >= 0:
+        return max(max_threshold + 1, len(markets))
+    return len(markets)
+
+
+def _basket_integrity(event: dict, markets: list[dict] | None = None) -> dict:
+    raw_markets = markets if markets is not None else (event.get("markets") or [])
+    official = _official_outcome_count(event)
+    captured = len([m for m in raw_markets if _market_token_ids(m)])
+    accepting = len([
+        m for m in raw_markets
+        if _market_token_ids(m) and m.get("acceptingOrders", True) and not m.get("closed") and not m.get("archived")
+    ])
+    ok = official > 0 and captured == official
+    return {
+        "official_count": official,
+        "captured_count": captured,
+        "accepting_count": accepting,
+        "ok": ok,
+        "note": (
+            f"池子完整性通过：官方 {official} 个结果，已抓取 {captured} 个。"
+            if ok
+            else f"池子完整性未通过：官方 {official} 个结果，当前只抓取 {captured} 个，禁止一键买入。"
+        ),
+    }
+
+
+def _basket_event_safety(event: dict, now: datetime) -> dict:
+    """篮子套利只接受完整且每条腿都仍可交易的事件。"""
+    if not _is_open(event, now):
+        return {"ok": False, "markets": [], "reason": "事件已结束或已关闭"}
+    if _has_resolution_state(event):
+        return {"ok": False, "markets": [], "reason": "事件已进入结算/争议状态"}
+    if event.get("negRiskAugmented") is True:
+        return {"ok": False, "markets": [], "reason": "增强型负风险事件含占位/Other 规则，不做整篮套利"}
+
+    event_end = _parse_dt(event.get("endDate") or event.get("endDateIso"))
+    min_end = now + timedelta(hours=BASKET_MIN_HOURS_TO_EXPIRY)
+    if not event_end:
+        return {"ok": False, "markets": [], "reason": "缺少事件到期时间"}
+    if event_end <= min_end:
+        return {"ok": False, "markets": [], "reason": f"距离到期不足 {BASKET_MIN_HOURS_TO_EXPIRY} 小时"}
+
+    raw_markets = event.get("markets") or []
+    official = _official_outcome_count(event)
+    tradable = []
+    closed_count = 0
+    resolution_count = 0
+    no_orders_count = 0
+    no_token_count = 0
+    placeholder_count = 0
+
+    for market in raw_markets:
+        if not _market_token_ids(market):
+            no_token_count += 1
+            continue
+        if _is_placeholder_outcome(market):
+            placeholder_count += 1
+            continue
+        if _has_resolution_state(market):
+            resolution_count += 1
+            continue
+        if not _is_open(market, now):
+            closed_count += 1
+            continue
+        market_end = _parse_dt(market.get("endDate") or market.get("endDateIso"))
+        if not market_end or market_end <= min_end:
+            closed_count += 1
+            continue
+        if market.get("acceptingOrders") is False:
+            no_orders_count += 1
+            continue
+        tradable.append(market)
+
+    if official <= 1:
+        return {"ok": False, "markets": tradable, "reason": "官方结果数不足，不能组成篮子"}
+    if resolution_count:
+        return {"ok": False, "markets": tradable, "reason": f"已有 {resolution_count} 个子市场进入结算/已定价 0/1"}
+    if closed_count or no_orders_count:
+        return {
+            "ok": False,
+            "markets": tradable,
+            "reason": f"已有 {closed_count} 个子市场关闭、{no_orders_count} 个不接单",
+        }
+    if no_token_count:
+        return {"ok": False, "markets": tradable, "reason": f"有 {no_token_count} 个子市场缺 token"}
+    if placeholder_count:
+        return {"ok": False, "markets": tradable, "reason": f"有 {placeholder_count} 个占位结果，不能确认完整结果集"}
+    if len(tradable) != official:
+        return {
+            "ok": False,
+            "markets": tradable,
+            "reason": f"官方 {official} 个结果，当前可交易 {len(tradable)} 个",
+        }
+    return {"ok": True, "markets": tradable, "reason": "事件和所有子市场均处于可交易状态"}
 
 
 async def _fetch_gamma_pages(endpoint: str, params: dict, max_pages: int = 10, page_size: int = 100) -> list[dict]:
@@ -206,10 +391,43 @@ BTC_TIMESTAMP_SERIES = [
     {"slug": "btc-up-or-down-4h", "prefix": "btc-updown-4h", "label": "4小时", "interval": 14400},
 ]
 # series 型: 通过 series 端点获取 events，slug 为日期格式
+BTC_HOURLY_LOOKAHEAD = 3
 BTC_SERIES_FETCH = [
-    {"slug": "btc-up-or-down-hourly", "label": "1小时"},
     {"slug": "btc-up-or-down-daily", "label": "1天"},
 ]
+NY_TZ = ZoneInfo("America/New_York")
+
+
+def _iso_z(dt: datetime | None) -> str | None:
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _btc_hourly_slug(dt_ny: datetime) -> str:
+    month = dt_ny.strftime("%B").lower()
+    hour = dt_ny.strftime("%I").lstrip("0") or "12"
+    ampm = dt_ny.strftime("%p").lower()
+    return f"bitcoin-up-or-down-{month}-{dt_ny.day}-{dt_ny.year}-{hour}{ampm}-et"
+
+
+def _btc_window_title_zh(label: str, start_dt: datetime, end_dt: datetime) -> str:
+    start_bj = start_dt.astimezone(timezone(timedelta(hours=8)))
+    end_bj = end_dt.astimezone(timezone(timedelta(hours=8)))
+    if start_bj.date() == end_bj.date():
+        return f"BTC {label} {start_bj:%m-%d %H:%M}-{end_bj:%H:%M}"
+    return f"BTC {label} {start_bj:%m-%d %H:%M} ~ {end_bj:%m-%d %H:%M}"
+
+
+def _btc_hourly_candidates(now: datetime) -> list[tuple[str, datetime, datetime]]:
+    now_ny = now.astimezone(NY_TZ)
+    hour_start = now_ny.replace(minute=0, second=0, microsecond=0)
+    candidates = []
+    for offset in range(BTC_HOURLY_LOOKAHEAD):
+        start_ny = hour_start + timedelta(hours=offset)
+        end_ny = start_ny + timedelta(hours=1)
+        candidates.append((_btc_hourly_slug(start_ny), start_ny.astimezone(timezone.utc), end_ny.astimezone(timezone.utc)))
+    return candidates
 
 
 def _extract_market_info(event: dict) -> list[dict]:
@@ -248,13 +466,44 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
             if not _is_open(event, now):
                 return None
             title = event.get("title", "")
+            start_raw = event.get("startTime") or event.get("startDate")
+            end_raw = event.get("endDate")
             return {
                 "event_slug": event.get("slug", ""),
                 "title": title,
                 "title_zh": translate_title(title),
                 "series_label": label,
-                "start_time_bj": to_beijing_time(event.get("startTime") or event.get("startDate")),
-                "end_time_bj": to_beijing_time(event.get("endDate")),
+                "window_start_iso": start_raw,
+                "window_end_iso": end_raw,
+                "start_time_bj": to_beijing_time(start_raw),
+                "end_time_bj": to_beijing_time(end_raw),
+                "markets": _extract_market_info(event),
+            }
+        except Exception:
+            return None
+
+    async def fetch_hourly_by_slug(slug, start_dt, end_dt):
+        try:
+            event = await gamma_api.get_event(slug)
+            if not event:
+                return None
+            if not _is_open(event, now):
+                return None
+            event_end = _parse_dt(event.get("endDate") or event.get("endDateIso"))
+            if event_end and event_end <= now:
+                return None
+            title = event.get("title", "")
+            start_iso = _iso_z(start_dt)
+            end_iso = _iso_z(end_dt)
+            return {
+                "event_slug": event.get("slug", slug),
+                "title": title,
+                "title_zh": _btc_window_title_zh("1小时", start_dt, end_dt),
+                "series_label": "1小时",
+                "window_start_iso": start_iso,
+                "window_end_iso": end_iso,
+                "start_time_bj": to_beijing_time(start_iso),
+                "end_time_bj": to_beijing_time(end_iso),
                 "markets": _extract_market_info(event),
             }
         except Exception:
@@ -278,13 +527,17 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
                 if not _is_open(full_event, now):
                     continue
                 title = full_event.get("title", "")
+                start_raw = full_event.get("startTime") or full_event.get("startDate")
+                end_raw = full_event.get("endDate")
                 results.append({
                     "event_slug": slug,
                     "title": title,
                     "title_zh": translate_title(title),
                     "series_label": series_info["label"],
-                    "start_time_bj": to_beijing_time(full_event.get("startTime") or full_event.get("startDate")),
-                    "end_time_bj": to_beijing_time(full_event.get("endDate")),
+                    "window_start_iso": start_raw,
+                    "window_end_iso": end_raw,
+                    "start_time_bj": to_beijing_time(start_raw),
+                    "end_time_bj": to_beijing_time(end_raw),
                     "markets": _extract_market_info(full_event),
                 })
             return results
@@ -292,6 +545,7 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
             return []
 
     tasks = [fetch_by_slug(slug, label) for slug, label in slugs]
+    tasks += [fetch_hourly_by_slug(slug, start_dt, end_dt) for slug, start_dt, end_dt in _btc_hourly_candidates(now)]
     tasks += [fetch_from_series(s) for s in BTC_SERIES_FETCH]
 
     raw = await asyncio.gather(*tasks)
@@ -302,7 +556,7 @@ async def _scan_btc_short_markets_inner(db: AsyncSession | None) -> list[dict]:
         elif r is not None:
             results.append(r)
 
-    results.sort(key=lambda x: x.get("start_time_bj", ""))
+    results.sort(key=lambda x: (_parse_dt(x.get("window_start_iso")) or now).timestamp())
     return results
 
 
@@ -427,33 +681,68 @@ async def scan_new_political_markets(db: AsyncSession | None) -> list[dict]:
     return results
 
 
-async def scan_arbitrage(db: AsyncSession | None, threshold: float = 0.03) -> list[dict]:
+async def scan_arbitrage(db: AsyncSession | None, threshold: float = 0.03, budget_usdc: float = 100) -> list[dict]:
     """扫描负风险多结果事件的 YES 篮子套利。"""
     now = datetime.now(timezone.utc)
+    budget_usdc = min(max(float(budget_usdc or 100), 5.0), 10000.0)
     events = await _fetch_gamma_pages(
         "events",
         {"order": "volume24hr", "ascending": "false"},
         max_pages=15,
     )
 
-    results = []
-    for event in events:
-        if not _is_open(event, now):
+    raw_candidates = []
+    full_event_sem = asyncio.Semaphore(12)
+
+    async def full_event(event: dict) -> dict:
+        slug = event.get("slug", "")
+        if not slug:
+            return event
+        async with full_event_sem:
+            try:
+                return await gamma_api.get_event(slug) or event
+            except Exception:
+                return event
+
+    for raw_event in events:
+        if not _is_open(raw_event, now):
+            continue
+        if _has_resolution_state(raw_event):
             continue
 
-        markets = [m for m in event.get("markets", []) if _is_open(m, now)]
-        if len(markets) < 2:
+        raw_markets = [
+            m for m in raw_event.get("markets", [])
+            if _is_tradable_market(m, now)
+        ]
+        if len(raw_markets) < 2:
             continue
 
-        neg_risk_ids = {str(m.get("negRiskMarketID")) for m in markets if m.get("negRiskMarketID")}
-        is_neg_risk_event = bool(event.get("enableNegRisk") or event.get("negRisk") or neg_risk_ids)
+        neg_risk_ids = {str(m.get("negRiskMarketID")) for m in raw_markets if m.get("negRiskMarketID")}
+        is_neg_risk_event = bool(raw_event.get("enableNegRisk") or raw_event.get("negRisk") or neg_risk_ids)
         if not is_neg_risk_event:
             continue
+        raw_candidates.append(raw_event)
+
+    # 完整性校验要拉完整 event，但只对成交量排序后的负风险候选做，避免页面扫描被全量详情请求拖死。
+    raw_candidates.sort(key=lambda e: _to_float(e.get("volume24hr") or e.get("volume"), 0.0), reverse=True)
+    full_events = await asyncio.gather(*(full_event(e) for e in raw_candidates[:200]))
+
+    results = []
+    for event in full_events:
+        safety = _basket_event_safety(event, now)
+        if not safety["ok"]:
+            continue
+        markets = safety["markets"]
+        if len(markets) < 2:
+            continue
+        integrity = _basket_integrity(event, markets)
 
         yes_ask_sum = 0.0
         yes_bid_sum = 0.0
         valid_buy_basket = True
         valid_sell_basket = True
+        missing_ask_count = 0
+        unavailable_count = 0
         market_details = []
 
         for m in markets:
@@ -461,12 +750,15 @@ async def scan_arbitrage(db: AsyncSession | None, threshold: float = 0.03) -> li
             if not info["token_ids"] or not info.get("accepting_orders", True):
                 valid_buy_basket = False
                 valid_sell_basket = False
+                unavailable_count += 1
+                market_details.append(info)
                 continue
             yes_price = info["yes_price"]
             best_ask = _to_float(m.get("bestAsk"), 0.0)
             best_bid = _to_float(m.get("bestBid"), 0.0)
             if best_ask <= 0 or best_ask >= 1:
                 valid_buy_basket = False
+                missing_ask_count += 1
             else:
                 yes_ask_sum += best_ask
             if best_bid <= 0 or best_bid >= 1:
@@ -483,24 +775,29 @@ async def scan_arbitrage(db: AsyncSession | None, threshold: float = 0.03) -> li
         if len(market_details) < 2:
             continue
 
-        if valid_buy_basket and yes_ask_sum < 1.0 - threshold:
+        if yes_ask_sum > 0 and yes_ask_sum < 1.0 - threshold:
             direction = "BUY_YES"
             price_sum = yes_ask_sum
             deviation = 1.0 - yes_ask_sum
-            executable = yes_ask_sum >= 0.85
-            note = (
-                "买入所有 YES 结果，完整篮子理论到期兑付 1 USDC。"
-                if executable
-                else "YES 总和过低，可能不是完整结果集，只作为观察候选。"
+            executable = bool(
+                integrity["ok"]
+                and valid_buy_basket
+                and BASKET_MIN_BUY_SUM <= yes_ask_sum <= BASKET_MAX_BUY_SUM
             )
-        elif valid_sell_basket and yes_bid_sum > 1.0 + threshold:
-            direction = "SELL_YES"
-            price_sum = yes_bid_sum
-            deviation = yes_bid_sum - 1.0
-            executable = False
-            note = "卖出所有 YES 需要已有库存或完整做市流程，当前版本不建议一键执行。"
+            can_shadow = False
+            if not executable:
+                continue
+            note = (
+                f"整篮 BUY_YES 已通过完整性和到期安全检查；按预算 ${budget_usdc:.2f} 估算，"
+                "提交前仍会重新预检实时订单簿。"
+            )
         else:
             continue
+
+        target_shares = budget_usdc / price_sum if price_sum > 0 else 0.0
+        payout = target_shares
+        estimated_profit = payout - budget_usdc
+        estimated_profit_pct = (estimated_profit / budget_usdc * 100) if budget_usdc > 0 else 0.0
 
         results.append({
             "event_slug": event.get("slug", ""),
@@ -510,15 +807,23 @@ async def scan_arbitrage(db: AsyncSession | None, threshold: float = 0.03) -> li
             "yes_ask_sum": round(yes_ask_sum, 4),
             "yes_bid_sum": round(yes_bid_sum, 4),
             "deviation": round(deviation, 4),
-            "estimated_profit_pct": round(deviation * 100, 2),
+            "budget_usdc": round(budget_usdc, 2),
+            "target_shares": round(target_shares, 4),
+            "payout_if_complete": round(payout, 4),
+            "estimated_profit": round(estimated_profit, 4),
+            "estimated_profit_pct": round(estimated_profit_pct, 2),
             "direction": direction,
             "executable": executable,
+            "can_shadow": can_shadow,
+            "missing_ask_count": missing_ask_count,
+            "unavailable_count": unavailable_count,
+            "integrity": integrity,
             "execution_note": note,
             "end_date_bj": to_beijing_time(event.get("endDate") or event.get("endDateIso")),
             "markets": market_details,
         })
 
-    results.sort(key=lambda x: x.get("deviation", 0), reverse=True)
+    results.sort(key=lambda x: x.get("estimated_profit_pct", 0), reverse=True)
     await _save_scan(db, "arbitrage", results)
 
     return results

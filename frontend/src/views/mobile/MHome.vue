@@ -38,7 +38,7 @@
         <div v-for="p in positions.slice(0, 5)" :key="p.asset" class="pos-row" @click="$router.push('/m/positions')">
           <div class="pos-info">
             <div class="pos-title">{{ p.title_zh || p.title }}</div>
-            <div class="pos-meta">{{ p.size }} 份</div>
+            <div class="pos-meta">{{ p.size }} 份 · 到期 {{ p.endDate_bj || p.endDateIso_bj || '-' }}</div>
           </div>
           <div class="pos-value" :class="{ profit: parseFloat(p.cashPnl || 0) >= 0, loss: parseFloat(p.cashPnl || 0) < 0 }">
             ${{ parseFloat(p.currentValue || 0).toFixed(2) }}

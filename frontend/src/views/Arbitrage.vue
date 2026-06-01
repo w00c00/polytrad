@@ -8,6 +8,8 @@
               <span>事件套利扫描</span>
               <div>
                 <el-button size="small" @click="showHelp = true" style="margin-right:8px">套利说明</el-button>
+                <span style="margin-right:8px">篮子预算</span>
+                <el-input-number v-model="precheckBudget" :min="5" :max="10000" :step="5" size="small" style="width:120px;margin-right:8px" />
                 <span style="margin-right:8px">偏差阈值:</span>
                 <el-input-number v-model="threshold" :min="0.01" :max="0.5" :step="0.01" :precision="2" size="small" style="width:100px;margin-right:8px" />
                 <el-button type="primary" size="small" @click="scan" :loading="loading">扫描</el-button>
@@ -22,8 +24,11 @@
             <el-table-column label="YES总和" width="100">
               <template #default="{ row }">{{ row.yes_sum.toFixed(4) }}</template>
             </el-table-column>
-            <el-table-column label="偏差" width="100">
-              <template #default="{ row }">{{ row.deviation.toFixed(4) }}</template>
+            <el-table-column label="预算毛利" width="110">
+              <template #default="{ row }">${{ Number(row.estimated_profit || 0).toFixed(2) }}</template>
+            </el-table-column>
+            <el-table-column label="毛利率" width="90">
+              <template #default="{ row }">{{ Number(row.estimated_profit_pct || 0).toFixed(2) }}%</template>
             </el-table-column>
             <el-table-column label="方向" width="100">
               <template #default="{ row }">
@@ -32,18 +37,27 @@
             </el-table-column>
             <el-table-column label="可执行" width="90">
               <template #default="{ row }">
-                <el-tag :type="row.executable ? 'success' : 'warning'" size="small">{{ row.executable ? '可买入' : '需库存' }}</el-tag>
+                <el-tag :type="basketStatusType(row)" size="small">{{ basketStatusLabel(row) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="市场数" width="80">
-              <template #default="{ row }">{{ row.markets?.length || 0 }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="150">
+            <el-table-column label="完整性" width="100">
               <template #default="{ row }">
-                <el-button size="small" @click.stop="expandDetail(row)">详情</el-button>
-                <el-button size="small" type="primary" link @click.stop="precheckRow(row)">预检</el-button>
+                <el-tag :type="row.integrity?.ok ? 'success' : 'danger'" size="small">
+                  {{ row.integrity?.captured_count || row.markets?.length || 0 }}/{{ row.integrity?.official_count || '?' }}
+                </el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="到期" width="120">
+              <template #default="{ row }">{{ row.end_date_bj || '-' }}</template>
+            </el-table-column>
+	            <el-table-column label="操作" width="270">
+	              <template #default="{ row }">
+	                <el-button size="small" @click.stop="expandDetail(row)">详情</el-button>
+	                <el-button size="small" type="info" link @click.stop="showAdvice(row, 'basket', precheckBudget)">AI提示</el-button>
+	                <el-button size="small" type="primary" link @click.stop="precheckRow(row)">预检</el-button>
+	                <el-button size="small" type="success" link :loading="actionLoading === actionKey(row, 'basket')" :disabled="!row.executable || row.direction !== 'BUY_YES'" @click.stop="buyBasket(row, true)">一键买</el-button>
+	              </template>
+	            </el-table-column>
           </el-table>
         </el-card>
 
@@ -74,11 +88,14 @@
                 <el-input-number v-model="slippageParams.amount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
                 <span style="margin-right:8px">最大滑点%</span>
                 <el-input-number v-model="slippageParams.max_slippage_pct" :min="0.1" :max="20" :step="0.1" size="small" style="width:110px;margin-right:8px" />
+                <el-button size="small" type="success" :disabled="slippageSelected.length === 0" :loading="slippageBatchLoading" @click="buySelectedSlippage">批量买选中</el-button>
                 <el-button size="small" type="primary" :loading="slippageLoading" @click="loadSlippage">扫描</el-button>
               </div>
             </div>
           </template>
-          <el-table :data="slippageResults" size="small" v-loading="slippageLoading" max-height="560">
+          <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px" title="操作提示" description="这里不是套利利润，毛利是假设该结果最终兑付 1 USDC 时的兑付毛利。价格冲击为 0 表示本次金额按当前盘口不会推高均价；买入或批量买入都会在后端重新预检并用 FOK 提交。" />
+          <el-table :data="slippageResults" size="small" v-loading="slippageLoading" max-height="560" row-key="token_id" @selection-change="onSlippageSelection">
+            <el-table-column type="selection" width="42" fixed="left" />
             <el-table-column label="市场" show-overflow-tooltip>
               <template #default="{ row }">{{ row.title_zh || row.title }}</template>
             </el-table-column>
@@ -89,8 +106,16 @@
             <el-table-column label="最差价" width="80">
               <template #default="{ row }">${{ row.depth.worst_price.toFixed(4) }}</template>
             </el-table-column>
-            <el-table-column label="滑点" width="80">
-              <template #default="{ row }">{{ row.depth.slippage_pct.toFixed(2) }}%</template>
+            <el-table-column label="价格冲击" width="90">
+              <template #default="{ row }">
+                {{ row.depth.slippage_pct.toFixed(2) }}%
+              </template>
+            </el-table-column>
+            <el-table-column label="兑付毛利" width="100">
+              <template #default="{ row }">${{ Number(row.depth.gross_profit_if_win || 0).toFixed(2) }}</template>
+            </el-table-column>
+            <el-table-column label="兑付ROI" width="90">
+              <template #default="{ row }">{{ Number(row.depth.gross_roi_if_win_pct || 0).toFixed(1) }}%</template>
             </el-table-column>
             <el-table-column label="可买份额" width="100">
               <template #default="{ row }">{{ row.depth.shares.toFixed(2) }}</template>
@@ -98,6 +123,13 @@
             <el-table-column label="24h量" width="110">
               <template #default="{ row }">${{ Math.round(row.volume_24h).toLocaleString() }}</template>
             </el-table-column>
+            <el-table-column prop="end_date_bj" label="到期" width="120" />
+	            <el-table-column label="操作" width="130" fixed="right">
+	              <template #default="{ row }">
+	                <el-button size="small" type="info" link @click="showAdvice(row, 'slippage', slippageParams.amount, { max_slippage_pct: slippageParams.max_slippage_pct })">AI</el-button>
+	                <el-button size="small" type="primary" :loading="actionLoading === actionKey(row, 'slippage')" @click="buySlippage(row)">买入</el-button>
+	              </template>
+	            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -108,25 +140,62 @@
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>跨事件同题价差</span>
               <div>
+                <span style="margin-right:8px">双边预算</span>
+                <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
                 <span style="margin-right:8px">价差</span>
                 <el-input-number v-model="crossParams.min_spread" :min="0.01" :max="0.8" :step="0.01" :precision="2" size="small" style="width:100px;margin-right:8px" />
                 <el-button size="small" type="primary" :loading="crossLoading" @click="loadCross">扫描</el-button>
               </div>
             </div>
           </template>
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="双边操作提示" description="预算毛利按上方“双边预算”估算，最大盘口只作参考。同题重复盘买候选 YES + 参考 NO；到期包含盘买后到期 YES + 前到期 NO。交易所不保证跨市场原子成交，提交后仍要核对订单。" />
           <el-table :data="crossResults" size="small" v-loading="crossLoading" max-height="560">
             <el-table-column label="主题" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.topic_zh || row.topic }}</template>
+              <template #default="{ row }">
+                <div>{{ row.topic_zh || row.topic }}</div>
+                <div style="font-size:12px;color:#909399">{{ row.strategy_label || row.relation_type || '-' }}</div>
+              </template>
             </el-table-column>
             <el-table-column label="价差" width="90">
               <template #default="{ row }">{{ (row.spread * 100).toFixed(1) }}%</template>
             </el-table-column>
-            <el-table-column label="低价买入候选" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.buy_candidate.question_zh }}</template>
+            <el-table-column label="预算成本" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.executable ? 'success' : 'warning'" size="small">
+                  {{ row.executable ? `$${Number(row.pair_depth?.total_cost || row.pair_depth?.capacity_usdc || 0).toFixed(2)}` : '观察' }}
+                </el-tag>
+              </template>
             </el-table-column>
-            <el-table-column label="高价参考" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.sell_reference.question_zh }}</template>
+            <el-table-column label="预算毛利" width="120">
+              <template #default="{ row }">
+                <template v-if="row.executable">
+                  ${{ Number(row.pair_depth?.expected_profit || 0).toFixed(2) }}
+                  <span style="color:#909399">({{ Number(row.pair_depth?.expected_profit_pct || 0).toFixed(2) }}%)</span>
+                </template>
+                <span v-else style="color:#909399">无正毛利</span>
+              </template>
             </el-table-column>
+            <el-table-column label="最大盘口" width="110">
+              <template #default="{ row }">${{ Number(row.pair_depth?.max_capacity_usdc || 0).toFixed(2) }}</template>
+            </el-table-column>
+            <el-table-column label="买入 YES" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div>{{ row.buy_candidate.question_zh }}</div>
+                <div style="font-size:12px;color:#f56c6c">到期 {{ row.buy_candidate.end_date_bj || '-' }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="对冲 NO" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div>{{ row.sell_reference.question_zh }}</div>
+                <div style="font-size:12px;color:#909399">到期 {{ row.sell_reference.end_date_bj || '-' }}</div>
+              </template>
+            </el-table-column>
+	            <el-table-column label="操作" width="165" fixed="right">
+	              <template #default="{ row }">
+	                <el-button size="small" type="info" link @click="showAdvice(row, 'cross', quickAmount, { min_profit_pct: minProfitPct })">AI</el-button>
+	                <el-button size="small" type="success" :loading="actionLoading === actionKey(row, 'cross-smart')" :disabled="!row.executable" @click="buyCrossHedge(row)">按预算双边</el-button>
+	              </template>
+	            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -136,9 +205,15 @@
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>奖励市场做市面板</span>
-              <el-button size="small" type="primary" :loading="rewardsLoading" @click="loadRewards">扫描</el-button>
+              <div>
+                <span style="margin-right:8px">单边金额</span>
+                <el-input-number v-model="makerAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
+                <el-button size="small" type="warning" :loading="cancelAllLoading" @click="cancelAllOpenOrders">紧急全撤</el-button>
+                <el-button size="small" type="primary" :loading="rewardsLoading" @click="loadRewards">扫描</el-button>
+              </div>
             </div>
           </template>
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="做市提示" description="奖励做市不是直接吃单套利。按钮会在 YES/NO 两边各挂一个 post-only 买单，金额不足奖励最小份额时会拒绝提交；挂出后仍要到订单页观察是否 scoring、是否需要撤单。" />
           <el-table :data="rewardsResults" size="small" v-loading="rewardsLoading" max-height="560">
             <el-table-column label="市场" show-overflow-tooltip>
               <template #default="{ row }">{{ row.question_zh || row.question }}</template>
@@ -157,6 +232,13 @@
                 <el-tag :type="row.fit ? 'success' : 'warning'" size="small">{{ row.fit ? '达标' : '偏宽' }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="end_date_bj" label="到期" width="120" />
+	            <el-table-column label="操作" width="165" fixed="right">
+	              <template #default="{ row }">
+	                <el-button size="small" type="info" link @click="showAdvice(row, 'rewards', makerAmount)">AI</el-button>
+	                <el-button size="small" type="primary" :loading="actionLoading === actionKey(row, 'maker')" @click="quoteMaker(row)">挂双边</el-button>
+	              </template>
+	            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -167,6 +249,8 @@
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>临近结算 / UMA 状态</span>
               <div>
+                <span style="margin-right:8px">买入金额</span>
+                <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
                 <span style="margin-right:8px">小时</span>
                 <el-input-number v-model="resolutionParams.hours" :min="1" :max="168" size="small" style="width:100px;margin-right:8px" />
                 <el-button size="small" type="primary" :loading="resolutionLoading" @click="loadResolution">扫描</el-button>
@@ -185,8 +269,20 @@
             </el-table-column>
             <el-table-column prop="end_date_bj" label="结束" width="110" />
             <el-table-column prop="uma_status" label="状态" width="120" />
+            <el-table-column label="下单" width="80">
+              <template #default="{ row }">
+                <el-tag :type="row.can_buy ? 'success' : 'info'" size="small">{{ row.can_buy ? '可下单' : '观察' }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="24h量" width="110">
               <template #default="{ row }">${{ Math.round(row.volume_24h).toLocaleString() }}</template>
+            </el-table-column>
+	            <el-table-column label="操作" width="185" fixed="right">
+	              <template #default="{ row }">
+	                <el-button size="small" type="info" link @click="showAdvice(row, 'resolution', quickAmount)">AI</el-button>
+	                <el-button size="small" type="primary" link :disabled="!row.can_buy" :loading="actionLoading === actionKey(row, 'res-yes')" @click="buyOutcome(row, 0, 'YES')">买YES</el-button>
+	                <el-button size="small" type="primary" link :disabled="!row.can_buy || !row.token_ids?.[1]" :loading="actionLoading === actionKey(row, 'res-no')" @click="buyOutcome(row, 1, 'NO')">买NO</el-button>
+	              </template>
             </el-table-column>
           </el-table>
         </el-card>
@@ -197,10 +293,15 @@
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>持仓对冲建议</span>
-              <el-button size="small" type="primary" :loading="hedgeLoading" @click="loadHedges">刷新</el-button>
+              <div>
+                <el-button size="small" type="danger" :disabled="hedgeSelected.length === 0" :loading="hedgeCloseLoading" @click="closeSelectedHedges">批量 FOK 平仓</el-button>
+                <el-button size="small" type="warning" :loading="cancelAllLoading" @click="cancelAllOpenOrders">紧急全撤</el-button>
+                <el-button size="small" type="primary" :loading="hedgeLoading" @click="loadHedges">刷新</el-button>
+              </div>
             </div>
           </template>
-          <el-table :data="hedgeResults" size="small" v-loading="hedgeLoading" max-height="560">
+          <el-table :data="hedgeResults" size="small" v-loading="hedgeLoading" max-height="560" row-key="asset" @selection-change="onHedgeSelection">
+            <el-table-column type="selection" width="42" fixed="left" />
             <el-table-column label="持仓" show-overflow-tooltip>
               <template #default="{ row }">{{ row.title_zh || row.title }}</template>
             </el-table-column>
@@ -215,7 +316,15 @@
               <template #default="{ row }">{{ row.pnl >= 0 ? '+' : '' }}${{ row.pnl.toFixed(2) }}</template>
             </el-table-column>
             <el-table-column prop="risk" label="类型" width="110" />
+            <el-table-column label="到期" width="120">
+              <template #default="{ row }">{{ row.end_date_bj || '-' }}</template>
+            </el-table-column>
             <el-table-column prop="action" label="建议" show-overflow-tooltip />
+            <el-table-column label="操作" width="110" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="danger" :loading="actionLoading === actionKey(row, 'sell')" @click="sellHolding(row)">卖出</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -226,6 +335,8 @@
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>BTC 短周期动量提醒</span>
               <div>
+                <span style="margin-right:8px">买入金额</span>
+                <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
                 <span style="margin-right:8px">最小 edge</span>
                 <el-input-number v-model="btcParams.min_edge" :min="0.01" :max="0.5" :step="0.01" :precision="2" size="small" style="width:100px;margin-right:8px" />
                 <el-button size="small" type="primary" :loading="btcLoading" @click="loadBtcAlerts">扫描</el-button>
@@ -246,6 +357,12 @@
               <template #default="{ row }">UP {{ (row.signal.prob_up * 100).toFixed(1) }}%</template>
             </el-table-column>
             <el-table-column prop="end_time_bj" label="截止" width="110" />
+	            <el-table-column label="操作" width="125" fixed="right">
+	              <template #default="{ row }">
+	                <el-button size="small" type="info" link @click="showAdvice(row, 'btc', quickAmount)">AI</el-button>
+	                <el-button size="small" type="primary" :loading="actionLoading === actionKey(row, 'btc')" @click="buyBtcAlert(row)">买入</el-button>
+	              </template>
+	            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -271,33 +388,54 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showDetail" title="套利详情" width="820">
+	    <el-dialog v-model="showDetail" title="套利详情" width="820">
       <el-descriptions :column="2" border size="small" v-if="selected">
         <el-descriptions-item label="事件">{{ selected.title_zh || selected.title }}</el-descriptions-item>
         <el-descriptions-item label="YES总和">{{ selected.yes_sum.toFixed(4) }}</el-descriptions-item>
         <el-descriptions-item label="偏差">{{ selected.deviation.toFixed(4) }}</el-descriptions-item>
-        <el-descriptions-item label="预估毛利">{{ selected.estimated_profit_pct?.toFixed?.(2) || (selected.deviation * 100).toFixed(2) }}%</el-descriptions-item>
+        <el-descriptions-item label="预算毛利">${{ Number(selected.estimated_profit || 0).toFixed(2) }}（{{ Number(selected.estimated_profit_pct || 0).toFixed(2) }}%）</el-descriptions-item>
+        <el-descriptions-item label="到期时间">{{ selected.end_date_bj || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="池子完整性">
+          <el-tag :type="selected.integrity?.ok ? 'success' : 'danger'" size="small">
+            {{ selected.integrity?.captured_count || selected.markets?.length || 0 }}/{{ selected.integrity?.official_count || '?' }}
+          </el-tag>
+        </el-descriptions-item>
         <el-descriptions-item label="建议方向">
           <el-tag :type="selected.direction === 'SELL_YES' ? 'danger' : 'success'">{{ selected.direction }}</el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="执行提示">{{ selected.execution_note || '-' }}</el-descriptions-item>
       </el-descriptions>
       <el-form inline size="small" style="margin:12px 0">
-        <el-form-item label="预检预算 ($)">
-          <el-input-number v-model="precheckBudget" :min="5" :step="5" style="width:120px" />
+        <el-form-item label="篮子预算 ($)">
+          <el-input-number v-model="precheckBudget" :min="5" :max="10000" :step="5" style="width:130px" />
         </el-form-item>
-        <el-form-item label="单腿金额 ($)">
-          <el-input-number v-model="orderAmount" :min="1" :step="1" style="width:120px" />
+        <el-form-item label="最低毛利%">
+          <el-input-number v-model="minProfitPct" :min="0" :max="50" :step="0.1" :precision="1" style="width:120px" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="precheckLoading" @click="precheckSelectedBasket">篮子预检</el-button>
+          <el-button type="success" :loading="basketBuyLoading" :disabled="!selected?.executable || selected?.direction !== 'BUY_YES'" @click="buyBasket(selected)">一键买入篮子</el-button>
         </el-form-item>
       </el-form>
       <el-alert v-if="basketCheck" :type="basketCheck.fillable ? 'success' : 'warning'" show-icon :closable="false" style="margin-bottom:12px" :description="basketCheck.note">
         <template #title>
-          成本 ${{ basketCheck.total_cost }}，理论兑付 ${{ basketCheck.payout_if_complete }}，预估毛利 ${{ basketCheck.estimated_profit }}（{{ basketCheck.estimated_profit_pct }}%）
+          按预算 ${{ basketCheckBudget || basketCheck.budget_usdc }} 预检：直接成本 ${{ basketCheck.total_cost }}，影子估算 ${{ basketCheck.shadow_cost || 0 }}，理论兑付 ${{ basketCheck.payout_if_complete }}，预估毛利 ${{ basketCheck.estimated_profit }}（{{ basketCheck.estimated_profit_pct }}%）
         </template>
       </el-alert>
+      <el-table v-if="basketCheck?.shadow_legs?.length" :data="basketCheck.shadow_legs" size="small" style="margin-bottom:12px">
+        <el-table-column label="影子补腿市场" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.question_zh || row.question }}</template>
+        </el-table-column>
+        <el-table-column label="建议挂价" width="100">
+          <template #default="{ row }">${{ Number(row.suggested_price || 0).toFixed(4) }}</template>
+        </el-table-column>
+        <el-table-column label="份额" width="90">
+          <template #default="{ row }">{{ Number(row.target_shares || 0).toFixed(2) }}</template>
+        </el-table-column>
+        <el-table-column label="估算成本" width="100">
+          <template #default="{ row }">${{ Number(row.estimated_cost || 0).toFixed(2) }}</template>
+        </el-table-column>
+      </el-table>
       <el-table :data="selected?.markets || []" size="small">
         <el-table-column label="市场" show-overflow-tooltip>
           <template #default="{ row }">{{ row.question_zh || row.question }}</template>
@@ -308,20 +446,57 @@
         <el-table-column label="买/卖" width="110">
           <template #default="{ row }">${{ (row.best_ask || row.yes_price).toFixed(3) }} / ${{ (row.best_bid || row.yes_price).toFixed(3) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="120">
-          <template #default="{ row }">
-            <el-button size="small" type="primary" @click="executeArb(row)">执行</el-button>
-          </template>
+        <el-table-column label="到期" width="120">
+          <template #default="{ row }">{{ row.end_date_bj || selected?.end_date_bj || '-' }}</template>
         </el-table-column>
-      </el-table>
-    </el-dialog>
-  </div>
-</template>
+	      </el-table>
+	    </el-dialog>
+
+	    <el-dialog v-model="adviceVisible" title="AI 风控提示" width="720">
+	      <div v-if="advice">
+	        <el-alert :type="adviceAlertType(advice)" show-icon :closable="false" style="margin-bottom:12px">
+	          <template #title>
+	            {{ advice.summary }} ｜ 风险 {{ advice.risk_label }} ｜ {{ advice.suggested_action }}
+	          </template>
+	        </el-alert>
+	        <el-descriptions :column="2" border size="small" style="margin-bottom:12px">
+	          <el-descriptions-item label="机会">{{ advice.title }}</el-descriptions-item>
+	          <el-descriptions-item label="金额">${{ Number(advice.amount || 0).toFixed(2) }}</el-descriptions-item>
+	          <el-descriptions-item label="结论">
+	            <el-tag :type="advice.allowed ? (advice.risk_level === 'low' ? 'success' : 'warning') : 'danger'" size="small">{{ advice.verdict }}</el-tag>
+	          </el-descriptions-item>
+	          <el-descriptions-item label="引擎">{{ advice.engine }}</el-descriptions-item>
+	        </el-descriptions>
+	        <div v-if="advice.blockers?.length" class="advice-section">
+	          <div class="advice-title danger">阻断项</div>
+	          <ul><li v-for="b in advice.blockers" :key="b">{{ b }}</li></ul>
+	        </div>
+	        <div v-if="advice.warnings?.length" class="advice-section">
+	          <div class="advice-title warn">风险提示</div>
+	          <ul><li v-for="w in advice.warnings" :key="w">{{ w }}</li></ul>
+	        </div>
+	        <div v-if="advice.tips?.length" class="advice-section">
+	          <div class="advice-title">操作提示</div>
+	          <ul><li v-for="t in advice.tips" :key="t">{{ t }}</li></ul>
+	        </div>
+	        <el-table :data="advice.checks || []" size="small" style="margin-top:10px">
+	          <el-table-column prop="label" label="检查项" width="120" />
+	          <el-table-column label="状态" width="90">
+	            <template #default="{ row }">
+	              <el-tag :type="row.status === 'pass' ? 'success' : row.status === 'warn' ? 'warning' : 'danger'" size="small">{{ row.status }}</el-tag>
+	            </template>
+	          </el-table-column>
+	          <el-table-column prop="detail" label="详情" show-overflow-tooltip />
+	        </el-table>
+	      </div>
+	    </el-dialog>
+	  </div>
+	</template>
 
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { arbitrageApi, aiApi, opportunityApi } from '../api'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const activeTab = ref('basket')
 const loading = ref(false)
@@ -334,14 +509,25 @@ const aiProviders = ref<any[]>([])
 const aiConfigId = ref<number | null>(null)
 const predicting = ref(false)
 const prediction = ref('')
-const orderAmount = ref(10)
 const precheckBudget = ref(100)
 const precheckLoading = ref(false)
 const basketCheck = ref<any>(null)
+const basketCheckBudget = ref<number | null>(null)
+const basketBuyLoading = ref(false)
+const minProfitPct = ref(0.2)
+const quickAmount = ref(10)
+const makerAmount = ref(10)
+const actionLoading = ref('')
+const cancelAllLoading = ref(false)
+const adviceVisible = ref(false)
+const advice = ref<any>(null)
+const adviceLoading = ref(false)
 
 const slippageLoading = ref(false)
+const slippageBatchLoading = ref(false)
 const slippageParams = ref({ amount: 25, max_slippage_pct: 2, min_volume_24h: 5000, max_candidates: 120 })
 const slippageResults = ref<any[]>([])
+const slippageSelected = ref<any[]>([])
 
 const crossLoading = ref(false)
 const crossParams = ref({ min_spread: 0.08, max_candidates: 300 })
@@ -355,7 +541,9 @@ const resolutionParams = ref({ hours: 12, min_volume_24h: 1000 })
 const resolutionResults = ref<any[]>([])
 
 const hedgeLoading = ref(false)
+const hedgeCloseLoading = ref(false)
 const hedgeResults = ref<any[]>([])
+const hedgeSelected = ref<any[]>([])
 
 const btcLoading = ref(false)
 const btcNotifyLoading = ref(false)
@@ -365,7 +553,7 @@ const btcResults = ref<any[]>([])
 async function scan() {
   loading.value = true
   try {
-    const { data } = await arbitrageApi.scan(threshold.value)
+    const { data } = await arbitrageApi.scan(threshold.value, precheckBudget.value)
     results.value = data || []
     if (results.value.length === 0) ElMessage.info('未发现套利机会')
   } catch {} finally { loading.value = false }
@@ -374,12 +562,14 @@ async function scan() {
 function selectRow(row: any) {
   selected.value = row
   basketCheck.value = null
+  basketCheckBudget.value = null
   prediction.value = ''
 }
 
 function expandDetail(row: any) {
   selected.value = row
   basketCheck.value = null
+  basketCheckBudget.value = null
   showDetail.value = true
   prediction.value = ''
 }
@@ -390,38 +580,448 @@ async function precheckRow(row: any) {
   showDetail.value = true
 }
 
+function normalizeBudget(value: any) {
+  const budget = Number(value)
+  if (!Number.isFinite(budget) || budget < 5) {
+    throw new Error('篮子预算至少 5 USDC')
+  }
+  if (budget > 10000) {
+    throw new Error('篮子预算不能超过 10000 USDC')
+  }
+  return Math.round(budget * 100) / 100
+}
+
+async function fetchBasketPrecheck(row: any, budget: number) {
+  const { data } = await opportunityApi.basketPrecheck({ event_slug: row.event_slug, budget })
+  basketCheck.value = data
+  basketCheckBudget.value = Number(data.budget_usdc || budget)
+  return data
+}
+
+async function askBasketBudget() {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '请输入本次整篮买入预算。这里不是单腿金额，系统会用这笔总预算重新预检并按同等份额买入所有 YES。',
+      '设置篮子预算',
+      {
+        inputValue: String(precheckBudget.value),
+        inputType: 'number',
+        inputPattern: /^(?:(?:[5-9]|[1-9]\d{1,3})(?:\.\d{1,2})?|10000(?:\.0{1,2})?)$/,
+        inputErrorMessage: '请输入 5 - 10000 之间的 USDC 金额',
+        confirmButtonText: '按此预算预检',
+        cancelButtonText: '取消',
+      }
+    )
+    const budget = normalizeBudget(value)
+    precheckBudget.value = budget
+    return budget
+  } catch {
+    return null
+  }
+}
+
 async function precheckSelectedBasket() {
   if (!selected.value?.event_slug) return
   precheckLoading.value = true
   try {
-    const { data } = await opportunityApi.basketPrecheck({ event_slug: selected.value.event_slug, budget: precheckBudget.value })
-    basketCheck.value = data
+    const budget = normalizeBudget(precheckBudget.value)
+    precheckBudget.value = budget
+    await fetchBasketPrecheck(selected.value, budget)
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || err?.message || '预检失败')
   } finally { precheckLoading.value = false }
 }
 
-async function executeArb(row: any) {
-  if (!row.token_ids?.length) return
-  if (selected.value?.direction !== 'BUY_YES') {
-    ElMessage.warning('SELL_YES 需要已有 YES 库存或完整做市流程，当前不做一键卖出')
+function actionKey(row: any, action: string) {
+  return `${action}:${row?.event_slug || row?.slug || row?.token_id || row?.asset || row?.topic || row?.title || ''}`
+}
+
+function basketStatusLabel(row: any) {
+  if (!row?.integrity?.ok) return '漏项风险'
+  if (row.executable) return '可买入'
+  if (row.can_shadow) return '可补腿'
+  return '观察'
+}
+
+function basketStatusType(row: any) {
+  if (!row?.integrity?.ok) return 'danger'
+  if (row.executable) return 'success'
+  if (row.can_shadow) return 'warning'
+  return 'info'
+}
+
+function buyPayload(row: any, amount: number, extra: any = {}) {
+  return {
+    token_id: extra.token_id || row?.token_id || row?.token_ids?.[0],
+    amount,
+    tick_size: row?.tick_size || extra.tick_size || '0.01',
+    neg_risk: Boolean(row?.neg_risk ?? extra.neg_risk ?? false),
+    market_slug: row?.slug || extra.market_slug || '',
+    condition_id: row?.condition_id || extra.condition_id || '',
+    order_type: extra.order_type || 'FOK',
+    size: extra.size || 0,
+    limit_price: extra.limit_price || 0,
+  }
+}
+
+function adviceAlertType(data: any) {
+  if (!data?.allowed) return 'error'
+  if (data.risk_level === 'low') return 'success'
+  if (data.risk_level === 'medium') return 'warning'
+  if (data.risk_level === 'high') return 'warning'
+  return 'error'
+}
+
+function adviceKindFromAction(action: string) {
+  if (action.startsWith('res-')) return 'resolution'
+  if (action === 'slippage') return 'slippage'
+  if (action === 'btc') return 'btc'
+  if (action === 'maker') return 'rewards'
+  if (action.startsWith('cross')) return 'cross'
+  return 'unknown'
+}
+
+async function fetchAdvice(row: any, kind: string, amount: number, context: any = {}) {
+  const { data } = await opportunityApi.advice({ kind, item: row, amount, context })
+  return data
+}
+
+async function showAdvice(row: any, kind: string, amount: any, context: any = {}) {
+  adviceLoading.value = true
+  try {
+    advice.value = await fetchAdvice(row, kind, Number(amount || 0), context)
+    adviceVisible.value = true
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 风控失败')
+  } finally {
+    adviceLoading.value = false
+  }
+}
+
+async function confirmWithAdvice(row: any, kind: string, amount: number, context: any = {}, title = '确认执行') {
+  const data = await fetchAdvice(row, kind, amount, context)
+  advice.value = data
+  if (!data.allowed) {
+    adviceVisible.value = true
+    await ElMessageBox.alert(data.confirm_text, 'AI 风控阻断', { type: 'error', confirmButtonText: '知道了' })
+    return false
+  }
+  await ElMessageBox.confirm(data.confirm_text, title, {
+    type: data.risk_level === 'low' ? 'info' : 'warning',
+    confirmButtonText: '确认执行',
+    cancelButtonText: '取消',
+  })
+  return true
+}
+
+async function buyBasket(row: any, askAmount = false) {
+  if (!row?.event_slug) return
+  if (!row.integrity?.ok) {
+    ElMessage.error(row.integrity?.note || '池子完整性未通过，禁止一键买入')
+    return
+  }
+  if (row.direction !== 'BUY_YES' || !row.executable) {
+    ElMessage.warning('这个篮子不是可直接买入的 BUY_YES 机会')
+    return
+  }
+  selected.value = row
+  let budget: number | null = null
+  try {
+    budget = askAmount ? await askBasketBudget() : normalizeBudget(precheckBudget.value)
+  } catch (err: any) {
+    ElMessage.error(err?.message || '篮子预算无效')
+    return
+  }
+  if (budget === null) return
+  precheckBudget.value = budget
+  const key = actionKey(row, 'basket')
+  actionLoading.value = key
+  basketBuyLoading.value = true
+  try {
+    const check = await fetchBasketPrecheck(row, budget)
+    if (!check.fillable) {
+      ElMessage.warning(check.note || '当前盘口预检不可执行')
+      return
+    }
+    const merged = { ...row, ...check, event_slug: row.event_slug, direction: row.direction || 'BUY_YES', executable: check.fillable }
+    const okToSubmit = await confirmWithAdvice(merged, 'basket', budget, { min_profit_pct: minProfitPct.value }, '确认一键买入篮子')
+    if (!okToSubmit) return
+    const { data } = await opportunityApi.basketBuy({
+      event_slug: row.event_slug,
+      budget,
+      min_profit_pct: minProfitPct.value,
+    })
+    if (data.precheck) {
+      basketCheck.value = data.precheck
+      basketCheckBudget.value = Number(data.precheck.budget_usdc || budget)
+    }
+    const ok = data.orders?.length || 0
+    const fail = data.failed?.length || 0
+    ElMessage.success(`篮子订单已提交：预算 $${budget}，成功 ${ok} 条，失败 ${fail} 条`)
+  } catch (err: any) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.detail || err?.message || '篮子买入失败')
+    }
+  } finally {
+    basketBuyLoading.value = false
+    actionLoading.value = ''
+  }
+}
+
+async function quickBuy(row: any, amount: number, keyAction: string, extra: any = {}) {
+  const payload = buyPayload(row, amount, extra)
+  if (!payload.token_id) {
+    ElMessage.warning('缺少 token_id，无法下单')
     return
   }
   try {
-    const resp = await arbitrageApi.execute({
-      token_id: row.token_ids[0],
-      side: 'BUY',
-      neg_risk: true,
+    const kind = extra.advice_kind || adviceKindFromAction(keyAction)
+    const okToSubmit = await confirmWithAdvice(row, kind, amount, extra.advice_context || {}, '确认快捷买入')
+    if (!okToSubmit) return
+  } catch (err: any) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 风控失败')
+    return
+  }
+  const key = actionKey(row, keyAction)
+  actionLoading.value = key
+  try {
+    const { data } = await opportunityApi.quickBuy(payload)
+    ElMessage.success(`买入已提交: ${data.size?.toFixed?.(2) || data.size} 份 @ $${data.price}`)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '买入失败')
+  } finally {
+    actionLoading.value = ''
+  }
+}
+
+function buySlippage(row: any) {
+  return quickBuy(row, slippageParams.value.amount, 'slippage', {
+    size: row.depth?.shares || 0,
+    limit_price: row.depth?.worst_price || 0,
+    order_type: 'FOK',
+    advice_kind: 'slippage',
+    advice_context: { max_slippage_pct: slippageParams.value.max_slippage_pct },
+  })
+}
+
+function onSlippageSelection(rows: any[]) {
+  slippageSelected.value = rows
+}
+
+async function buySelectedSlippage() {
+  if (slippageSelected.value.length === 0) {
+    ElMessage.warning('请先勾选要批量买入的盘口')
+    return
+  }
+  slippageBatchLoading.value = true
+  try {
+    const total = slippageParams.value.amount * slippageSelected.value.length
+    await ElMessageBox.confirm(
+      `将对 ${slippageSelected.value.length} 个盘口各投入约 $${slippageParams.value.amount}，合计约 $${total}。提交前后端会重新检查滑点不超过 ${slippageParams.value.max_slippage_pct}%，任意一条不达标会取消整批。`,
+      '确认批量买入低滑点盘口',
+      { type: 'warning', confirmButtonText: '批量提交', cancelButtonText: '取消' }
+    )
+    const { data } = await opportunityApi.slippageBatchBuy({
+      items: slippageSelected.value,
+      amount: slippageParams.value.amount,
+      max_slippage_pct: slippageParams.value.max_slippage_pct,
+    })
+    const ok = data.orders?.length || 0
+    const fail = data.failed?.length || 0
+    if (data.success) {
+      ElMessage.success(`批量买入已提交：${ok} 条，预检成本 $${data.total_checked_cost}`)
+    } else {
+      ElMessage.warning(`批量买入未完全成功：成功 ${ok} 条，失败 ${fail} 条，请到订单页核对`)
+    }
+  } catch (err: any) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.detail || err?.message || '批量买入失败')
+    }
+  } finally {
+    slippageBatchLoading.value = false
+  }
+}
+
+async function buyCrossHedge(row: any) {
+  if (!row?.buy_candidate || !row?.sell_reference) {
+    ElMessage.warning('缺少低价候选或高价参考，无法双边下单')
+    return
+  }
+  const budget = Number(quickAmount.value)
+  if (!Number.isFinite(budget) || budget < 1 || budget > 10000) {
+    ElMessage.warning('双边预算请输入 1 - 10000 USDC')
+    return
+  }
+  const depth = row.pair_depth || {}
+  if (!depth.fillable) {
+    ElMessage.warning(depth.reason || '当前同题价差没有足够可盈利双边深度')
+    return
+  }
+  const key = actionKey(row, 'cross-smart')
+  actionLoading.value = key
+  try {
+    const okToSubmit = await confirmWithAdvice(row, 'cross', budget, { min_profit_pct: minProfitPct.value }, '确认同题双边套利')
+    if (!okToSubmit) return
+    const { data } = await opportunityApi.crossHedgeBuy({
+      buy_candidate: row.buy_candidate,
+      sell_reference: row.sell_reference,
+      amount: budget,
+      min_profit_pct: minProfitPct.value,
+    })
+    const executed = data.depth || {}
+    const ok = data.orders?.length || 0
+    const fail = data.failed?.length || 0
+    if (data.success) {
+      ElMessage.success(`双边订单已提交：成本 $${executed.total_cost}，份额 ${executed.target_shares}，成功 ${ok} 腿`)
+    } else {
+      ElMessage.warning(`双边订单未完全成功：成功 ${ok} 腿，失败 ${fail} 腿；系统已尝试撤销残留订单，请到订单页核对`)
+    }
+  } catch (err: any) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.detail || err?.message || '同题双边套利失败')
+    }
+  } finally {
+    actionLoading.value = ''
+  }
+}
+
+async function buyCandidate(row: any) {
+  try {
+    await ElMessageBox.confirm('同题价差需要人工确认结算口径一致；这里仅买入低价候选，不会自动完成对冲。', '确认买入候选', {
+      type: 'warning',
+      confirmButtonText: '买入',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  return quickBuy(row, quickAmount.value, 'cross')
+}
+
+function buyOutcome(row: any, idx: number, label: string) {
+  if (!row.can_buy) {
+    ElMessage.warning(row.trade_disabled_reason || '该临近结算市场当前不可下单')
+    return
+  }
+  return quickBuy(row, quickAmount.value, `res-${label.toLowerCase()}`, {
+    token_id: row.token_ids?.[idx],
+    advice_kind: 'resolution',
+  })
+}
+
+function buyBtcAlert(row: any) {
+  const market = row.market || {}
+  const idx = row.action === '买DOWN' ? 1 : 0
+  return quickBuy(row, quickAmount.value, 'btc', {
+    token_id: market.token_ids?.[idx],
+    market_slug: market.slug || '',
+    condition_id: market.condition_id || '',
+    tick_size: market.tick_size || '0.01',
+    neg_risk: market.neg_risk || false,
+    advice_kind: 'btc',
+  })
+}
+
+async function quoteMaker(row: any) {
+  const key = actionKey(row, 'maker')
+  actionLoading.value = key
+  try {
+    const okToSubmit = await confirmWithAdvice(row, 'rewards', makerAmount.value, {}, '确认奖励做市委托')
+    if (!okToSubmit) return
+    const { data } = await opportunityApi.makerQuote({
+      market_slug: row.slug,
+      amount_per_side: makerAmount.value,
+      improve_ticks: 0,
+    })
+    ElMessage.success(`做市委托已提交：${data.orders?.length || 0} 条`)
+  } catch (err: any) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err?.response?.data?.detail || err?.message || '做市委托失败')
+  } finally {
+    actionLoading.value = ''
+  }
+}
+
+async function sellHolding(row: any) {
+  if (!row.asset) {
+    ElMessage.warning('缺少持仓 token，无法卖出')
+    return
+  }
+  const key = actionKey(row, 'sell')
+  actionLoading.value = key
+  try {
+    await ElMessageBox.confirm(`将按当前 best bid 卖出 ${row.size.toFixed(2)} 份 ${row.outcome || ''}。`, '确认卖出持仓', {
+      type: 'warning',
+      confirmButtonText: '卖出',
+      cancelButtonText: '取消',
+    })
+    const { data } = await opportunityApi.quickSell({
+      token_id: row.asset,
+      size: row.size,
       tick_size: row.tick_size || '0.01',
+      neg_risk: row.neg_risk || false,
       market_slug: row.slug || '',
       condition_id: row.condition_id || '',
-      usdc_amount: orderAmount.value,
     })
-    const d = resp.data
-    ElMessage.success(`套利下单成功: $${orderAmount.value} → ${d.size} 份 @ $${d.price}`)
+    ElMessage.success(`卖出已提交: ${data.size?.toFixed?.(2) || data.size} 份 @ $${data.price}`)
   } catch (err: any) {
-    const raw = err?.response?.data?.detail || err?.message || '未知错误'
-    ElMessage.error({ message: `下单失败: ${raw}`, duration: 5000 })
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err?.response?.data?.detail || err?.message || '卖出失败')
+  } finally {
+    actionLoading.value = ''
+  }
+}
+
+function onHedgeSelection(rows: any[]) {
+  hedgeSelected.value = rows
+}
+
+async function closeSelectedHedges() {
+  if (hedgeSelected.value.length === 0) {
+    ElMessage.warning('请先勾选要平仓的持仓')
+    return
+  }
+  hedgeCloseLoading.value = true
+  try {
+    const value = hedgeSelected.value.reduce((sum, row) => sum + Number(row.current_value || 0), 0)
+    await ElMessageBox.confirm(
+      `将对 ${hedgeSelected.value.length} 个持仓按当前买盘深度预检并 FOK 平仓，当前市值约 $${value.toFixed(2)}。任意一条买盘深度不足会取消整批。`,
+      '确认批量平仓',
+      { type: 'warning', confirmButtonText: '批量平仓', cancelButtonText: '取消' }
+    )
+    const { data } = await opportunityApi.hedgeClose({ items: hedgeSelected.value, fraction: 1 })
+    const ok = data.orders?.length || 0
+    const fail = data.failed?.length || 0
+    if (data.success) {
+      ElMessage.success(`批量平仓已提交：${ok} 条 FOK 卖单`)
+      await loadHedges()
+    } else {
+      ElMessage.warning(`批量平仓未完全成功：成功 ${ok} 条，失败 ${fail} 条，请到订单页核对`)
+    }
+  } catch (err: any) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.detail || err?.message || '批量平仓失败')
+    }
+  } finally {
+    hedgeCloseLoading.value = false
+  }
+}
+
+async function cancelAllOpenOrders() {
+  cancelAllLoading.value = true
+  try {
+    await ElMessageBox.confirm('将撤销当前账号在 Polymarket 的所有未成交挂单。这个按钮适合做市失控或行情突变时使用。', '确认紧急全撤', {
+      type: 'warning',
+      confirmButtonText: '全部撤单',
+      cancelButtonText: '取消',
+    })
+    await opportunityApi.cancelAll()
+    ElMessage.success('已提交全部撤单')
+  } catch (err: any) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.detail || err?.message || '紧急撤单失败')
+    }
+  } finally {
+    cancelAllLoading.value = false
   }
 }
 
@@ -440,13 +1040,14 @@ async function loadSlippage() {
   try {
     const { data } = await opportunityApi.slippage(slippageParams.value)
     slippageResults.value = data || []
+    slippageSelected.value = []
   } finally { slippageLoading.value = false }
 }
 
 async function loadCross() {
   crossLoading.value = true
   try {
-    const { data } = await opportunityApi.crossEvent(crossParams.value)
+    const { data } = await opportunityApi.crossEvent({ ...crossParams.value, budget: quickAmount.value })
     crossResults.value = data || []
   } finally { crossLoading.value = false }
 }
@@ -472,6 +1073,7 @@ async function loadHedges() {
   try {
     const { data } = await opportunityApi.hedges()
     hedgeResults.value = data || []
+    hedgeSelected.value = []
   } finally { hedgeLoading.value = false }
 }
 
@@ -496,7 +1098,38 @@ watch(aiProviders, (list) => {
   if (list.length === 1 && !aiConfigId.value) aiConfigId.value = list[0].id
 })
 
+watch(precheckBudget, () => {
+  basketCheck.value = null
+  basketCheckBudget.value = null
+})
+
 onMounted(() => {
   aiApi.providers().then(({ data }) => { aiProviders.value = data }).catch(() => {})
 })
 </script>
+
+<style scoped>
+.advice-section {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.advice-section ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.advice-title {
+  font-weight: 600;
+  color: #303133;
+}
+
+.advice-title.warn {
+  color: #b88230;
+}
+
+.advice-title.danger {
+  color: #c45656;
+}
+</style>

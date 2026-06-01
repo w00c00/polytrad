@@ -28,6 +28,7 @@
           <span class="sheet-close" @click="showSheet = false">✕</span>
         </div>
         <div class="sheet-body">
+          <div class="sheet-expiry">到期: {{ selectedMarket?.end_date_bj || '-' }}</div>
           <div class="field">
             <label>方向</label>
             <div class="dir-btns">
@@ -121,6 +122,7 @@ onMounted(loadMarkets)
 .sheet-header { display: flex; justify-content: space-between; padding: 16px; font-size: 16px; font-weight: bold; border-bottom: 1px solid #f0f0f0; }
 .sheet-close { font-size: 20px; color: #909399; cursor: pointer; }
 .sheet-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.sheet-expiry { font-size: 12px; color: #f56c6c; line-height: 1.4; }
 .field label { display: block; font-size: 13px; color: #606266; margin-bottom: 6px; }
 .dir-btns { display: flex; gap: 8px; }
 .dir-btn { flex: 1; padding: 12px; border: 2px solid #dcdfe6; border-radius: 8px; background: #fff; font-size: 14px; font-weight: bold; cursor: pointer; }

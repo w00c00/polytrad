@@ -42,6 +42,9 @@
             <el-table-column label="成交量" width="100">
               <template #default="{ row }">${{ (row.volume || 0).toLocaleString() }}</template>
             </el-table-column>
+            <el-table-column label="到期" width="120">
+              <template #default="{ row }">{{ row.end_date_bj || selectedEvent?.end_date_bj || '-' }}</template>
+            </el-table-column>
             <el-table-column label="操作" width="100">
               <template #default="{ row }">
                 <el-button size="small" type="primary" @click="selectMarket(row)">选择</el-button>
@@ -57,6 +60,7 @@
           <el-form label-position="top" size="small">
             <el-form-item label="已选市场">
               <div style="font-size:12px;color:#666">{{ selectedMarketObj?.question_zh || selectedMarketObj?.question || '未选择' }}</div>
+              <div v-if="selectedMarketObj" style="font-size:12px;color:#f56c6c;margin-top:4px">到期: {{ selectedMarketObj.end_date_bj || selectedEvent?.end_date_bj || '-' }}</div>
             </el-form-item>
             <el-form-item label="方向">
               <el-radio-group v-model="form.direction">

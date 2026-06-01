@@ -52,6 +52,14 @@ if ! grep -q '^DATABASE_URL=' /etc/polytrad/polytrad.env; then
     echo "DATABASE_URL=sqlite+aiosqlite:////var/lib/polytrad/polytrad.db" >> /etc/polytrad/polytrad.env
 fi
 
+# 避免工作目录中的旧 .env 被 www-data 读取失败，生产环境统一走 systemd EnvironmentFile。
+if [ -f /opt/polytrad/.env ]; then
+    ts=$(date +%Y%m%d-%H%M%S)
+    cp /opt/polytrad/.env "/opt/polytrad/backups/env-$ts"
+    rm -f /opt/polytrad/.env
+    echo "已归档旧 .env: /opt/polytrad/backups/env-$ts"
+fi
+
 # 创建 venv
 python3 -m venv venv
 source venv/bin/activate
@@ -83,6 +91,8 @@ WantedBy=multi-user.target
 EOF
 
 # 5. Nginx 配置
+# 如果线上已经有 HTTPS/域名反代配置，部署时不要覆盖它。
+if [ ! -f /etc/nginx/sites-available/polytrad ]; then
 cat > /etc/nginx/sites-available/polytrad << 'EOF'
 server {
     listen 80;
@@ -103,14 +113,17 @@ server {
     }
 }
 EOF
+    echo "已创建默认 nginx 配置: /etc/nginx/sites-available/polytrad"
+else
+    echo "保留现有 nginx 配置: /etc/nginx/sites-available/polytrad"
+fi
 
 ln -sf /etc/nginx/sites-available/polytrad /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
 
 # 6. 启用服务
 systemctl daemon-reload
 systemctl enable polytrad
-systemctl start polytrad
+systemctl restart polytrad
 systemctl restart nginx
 
 echo "=== 部署完成 ==="

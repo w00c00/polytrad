@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
+from math import gcd
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
@@ -16,6 +18,7 @@ _OrderArgs = None
 _OrderType = None
 _MarketOrderArgs = None
 _PartialCreateOrderOptions = None
+_PostOrdersV2Args = None
 _Side = None
 _BalanceAllowanceParams = None
 _AssetType = None
@@ -28,11 +31,11 @@ VALID_ORDER_TYPES = {"GTC", "FOK", "FAK", "GTD"}
 
 
 def _load_clob_libs():
-    global _ClobClient, _ApiCreds, _OrderArgs, _OrderType, _MarketOrderArgs, _PartialCreateOrderOptions, _Side, _BalanceAllowanceParams, _AssetType
+    global _ClobClient, _ApiCreds, _OrderArgs, _OrderType, _MarketOrderArgs, _PartialCreateOrderOptions, _PostOrdersV2Args, _Side, _BalanceAllowanceParams, _AssetType
     if _ClobClient is not None:
         return
     from py_clob_client_v2.client import ClobClient
-    from py_clob_client_v2.clob_types import ApiCreds, OrderArgs, OrderType, MarketOrderArgs, PartialCreateOrderOptions, BalanceAllowanceParams, AssetType
+    from py_clob_client_v2.clob_types import ApiCreds, OrderArgs, OrderType, MarketOrderArgs, PartialCreateOrderOptions, PostOrdersV2Args, BalanceAllowanceParams, AssetType
     from py_clob_client_v2 import Side
     _ClobClient = ClobClient
     _ApiCreds = ApiCreds
@@ -40,6 +43,7 @@ def _load_clob_libs():
     _OrderType = OrderType
     _MarketOrderArgs = MarketOrderArgs
     _PartialCreateOrderOptions = PartialCreateOrderOptions
+    _PostOrdersV2Args = PostOrdersV2Args
     _Side = Side
     _BalanceAllowanceParams = BalanceAllowanceParams
     _AssetType = AssetType
@@ -126,11 +130,34 @@ def _clob_order_id(resp) -> str | None:
 
 
 def _ensure_clob_success(resp, action: str) -> None:
+    if isinstance(resp, list):
+        failed = [r for r in resp if isinstance(r, dict) and (r.get("success") is False or r.get("error") or r.get("message") == "error")]
+        if failed:
+            detail = failed[0].get("error") or failed[0].get("message") or failed[0]
+            raise ValueError(f"{action}失败: {detail}")
+        return
     if not isinstance(resp, dict):
         return
     if resp.get("success") is False or resp.get("error") or resp.get("message") == "error":
         detail = resp.get("error") or resp.get("message") or resp
         raise ValueError(f"{action}失败: {detail}")
+
+
+def _clob_success(resp) -> bool:
+    if isinstance(resp, dict):
+        return not (resp.get("success") is False or resp.get("error") or resp.get("message") == "error")
+    return True
+
+
+def _batch_response_items(resp) -> list:
+    if isinstance(resp, list):
+        return resp
+    if isinstance(resp, dict):
+        for key in ("orders", "responses", "results", "data"):
+            value = resp.get(key)
+            if isinstance(value, list):
+                return value
+    return []
 
 
 def _validate_order(side: str, order_type: str, price: float, size: float, usdc_amount: float) -> tuple[str, str]:
@@ -213,6 +240,179 @@ def _best_price_from_book(book: dict, side: str) -> tuple[float | None, str]:
     return (min(prices) if side == "BUY" else max(prices)), tick_size
 
 
+def _book_levels_from_book(book: dict, side: str) -> list[tuple[float, float]]:
+    raw_levels = book.get("asks" if side == "BUY" else "bids", [])
+    levels = []
+    for level in raw_levels:
+        price = level.get("price") if isinstance(level, dict) else getattr(level, "price", None)
+        size = level.get("size") if isinstance(level, dict) else getattr(level, "size", None)
+        try:
+            p = float(price)
+            s = float(size)
+        except (TypeError, ValueError):
+            continue
+        if 0 < p < 1 and s > 0:
+            levels.append((p, s))
+    levels.sort(key=lambda x: x[0], reverse=(side == "SELL"))
+    return levels
+
+
+def _depth_for_usdc(book: dict, side: str, amount: float) -> dict:
+    levels = _book_levels_from_book(book, side)
+    if not levels:
+        return {"fillable": False, "reason": "订单簿没有可买卖价"}
+
+    remaining = amount
+    filled = 0.0
+    notional = 0.0
+    worst_price = 0.0
+    levels_used = 0
+    for price, available in levels:
+        if remaining <= 1e-9:
+            break
+        take = min(available, remaining / price)
+        if take <= 1e-9:
+            continue
+        filled += take
+        notional += take * price
+        remaining -= take * price
+        worst_price = price
+        levels_used += 1
+
+    if filled < 5:
+        best = levels[0][0]
+        return {
+            "fillable": False,
+            "reason": f"金额太小或盘口太薄，按当前价格至少需要约 {best * 5:.2f} USDC",
+            "best_price": best,
+            "worst_price": worst_price or best,
+            "size": filled,
+            "notional": notional,
+        }
+    return {
+        "fillable": True,
+        "best_price": levels[0][0],
+        "worst_price": worst_price,
+        "size": filled,
+        "notional": notional,
+        "unfilled_usdc": max(remaining, 0.0),
+        "levels_used": levels_used,
+    }
+
+
+def _floor_decimal(value: float, decimals: int) -> float:
+    quant = Decimal("1").scaleb(-decimals)
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_DOWN))
+
+
+def _ceil_price_to_tick(price: float, tick_size: str) -> Decimal:
+    tick = Decimal(str(tick_size or "0.01"))
+    if tick <= 0:
+        tick = Decimal("0.01")
+    price_dec = Decimal(str(price))
+    steps = (price_dec / tick).to_integral_value(rounding=ROUND_CEILING)
+    return min(max(steps * tick, tick), Decimal("1") - tick)
+
+
+def _safe_buy_size_step(price: float) -> Decimal:
+    price_dec = Decimal(str(price))
+    if price_dec <= 0:
+        return Decimal("0")
+    price_decimals = max(-price_dec.as_tuple().exponent, 0)
+    price_scale = 10 ** price_decimals
+    price_units = int((price_dec * price_scale).to_integral_value(rounding=ROUND_DOWN))
+    if price_units <= 0:
+        return Decimal("0")
+
+    size_scale = 100
+    step_units = price_scale // gcd(price_units, price_scale)
+    return Decimal(step_units) / Decimal(size_scale)
+
+
+def _server_safe_buy_size(price: float, target_size: float, max_usdc: float) -> float:
+    """FOK/marketable BUY orders require USDC maker amount <= 2 decimals."""
+    price_dec = Decimal(str(price))
+    if price_dec <= 0:
+        return 0.0
+    step = _safe_buy_size_step(price)
+    if step <= 0:
+        return 0.0
+
+    # py-clob-client-v2 currently rounds limit-order size down to 2 decimals.
+    size_scale = 100
+    max_size_units = int((Decimal(str(target_size)) * size_scale).to_integral_value(rounding=ROUND_DOWN))
+    max_amount_units = int(((Decimal(str(max_usdc)) / price_dec) * size_scale).to_integral_value(rounding=ROUND_DOWN))
+    size_units = min(max_size_units, max_amount_units)
+    if size_units <= 0:
+        return 0.0
+
+    step_units = int((step * size_scale).to_integral_value(rounding=ROUND_CEILING))
+    size_units -= size_units % max(step_units, 1)
+    return float(Decimal(size_units) / Decimal(size_scale))
+
+
+def _server_safe_buy_quote(price: float, target_size: float, max_usdc: float, tick_size: str) -> tuple[float, float]:
+    """Find the nearest marketable BUY limit price/size pair that satisfies server precision."""
+    tick = Decimal(str(tick_size or "0.01"))
+    if tick <= 0:
+        tick = Decimal("0.01")
+    start = _ceil_price_to_tick(price, tick_size)
+    max_price = min(Decimal("1") - tick, Decimal(str(max_usdc)) / Decimal("5"))
+    if start > max_price:
+        return float(start), 0.0
+
+    seen = set()
+    candidates: list[Decimal] = []
+    max_steps = int(((max_price - start) / tick).to_integral_value(rounding=ROUND_DOWN))
+    for i in range(min(max_steps, 200) + 1):
+        candidates.append(start + tick * i)
+
+    cent = (start * Decimal("100")).to_integral_value(rounding=ROUND_CEILING) / Decimal("100")
+    if start <= cent <= max_price:
+        candidates.append(cent)
+
+    for candidate in candidates:
+        key = str(candidate.normalize())
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate_price = float(candidate)
+        size = _server_safe_buy_size(candidate_price, target_size, max_usdc)
+        if size >= 5.0:
+            return candidate_price, size
+    return float(start), 0.0
+
+
+def _server_safe_min_buy_cost(price: float, tick_size: str) -> float:
+    tick = Decimal(str(tick_size or "0.01"))
+    if tick <= 0:
+        tick = Decimal("0.01")
+    start = _ceil_price_to_tick(price, tick_size)
+    max_price = Decimal("1") - tick
+    best_cost: Decimal | None = None
+
+    candidates = [start + tick * i for i in range(201) if start + tick * i <= max_price]
+    cent = (start * Decimal("100")).to_integral_value(rounding=ROUND_CEILING) / Decimal("100")
+    if start <= cent <= max_price:
+        candidates.append(cent)
+
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate.normalize())
+        if key in seen:
+            continue
+        seen.add(key)
+        step = _safe_buy_size_step(float(candidate))
+        if step <= 0:
+            continue
+        min_size = (Decimal("5") / step).to_integral_value(rounding=ROUND_CEILING) * step
+        cost = candidate * min_size
+        best_cost = cost if best_cost is None else min(best_cost, cost)
+    if best_cost is None:
+        return float(start * Decimal("5"))
+    return float(best_cost)
+
+
 def _orderbook_to_dict(orderbook) -> dict:
     """将 CLOB orderbook 对象或字典统一为字典"""
     if isinstance(orderbook, dict):
@@ -238,21 +438,28 @@ async def place_limit_order(
     side, order_type = _validate_order(side, order_type, price, size, usdc_amount)
     client = await get_clob_client(user, db)
 
-    # 市价模式：从 CLOB 实时读盘口价
+    # 金额模式：从 CLOB 实时读订单簿，按深度给 FOK 限价，避免临近结算薄盘口只看 best ask 导致失败。
     if usdc_amount > 0:
         if usdc_amount < 1:
             raise ValueError("下单金额至少 1 USDC")
         orderbook = await _run_clob(client.get_order_book, token_id)
         book_dict = _orderbook_to_dict(orderbook)
-        best_price, real_tick = _best_price_from_book(book_dict, side)
-        if best_price is None:
-            raise ValueError("订单簿没有可买卖价")
-        tick_size = real_tick or tick_size
-        price = _clamp_price(best_price, tick_size)
-        size = usdc_amount / price
+        tick_size = str(book_dict.get("tick_size") or tick_size)
+        depth = _depth_for_usdc(book_dict, side, usdc_amount)
+        if not depth.get("fillable"):
+            raise ValueError(depth.get("reason") or "盘口深度不足，无法按金额下单")
+        price = _clamp_price(float(depth["worst_price"]), tick_size)
+        if side == "BUY":
+            price, size = _server_safe_buy_quote(price, float(depth["size"]), usdc_amount, tick_size)
+        else:
+            size = _floor_decimal(min(float(depth["size"]), usdc_amount / price), 2)
         if size < 5.0:
-            raise ValueError(f"金额太小，按价格 {price:.4f} 至少需要 {price * 5:.2f} USDC")
-        logger.info("实时盘口价: %s price=%.4f size=%.4f tick=%s", side, price, size, tick_size)
+            min_cost = _server_safe_min_buy_cost(price, tick_size) if side == "BUY" else price * 5
+            raise ValueError(f"金额太小或不满足交易所精度，按当前价格至少需要约 {min_cost:.2f} USDC")
+        logger.info(
+            "实时盘口深度: %s price=%.4f size=%.4f requested=%.4f order_notional=%.4f levels=%s tick=%s",
+            side, price, size, usdc_amount, price * size, depth.get("levels_used"), tick_size,
+        )
     else:
         price = _clamp_price(price, tick_size)
 
@@ -290,6 +497,111 @@ async def place_limit_order(
     return {"trade_id": trade.id, "order_id": trade.order_id, "price": price, "size": size, "response": resp}
 
 
+async def place_limit_orders_batch(
+    user: User,
+    db: AsyncSession,
+    orders: list[dict],
+    post_only: bool = False,
+) -> dict:
+    """批量提交限价单；主要用于篮子套利的一键 FOK 下单。"""
+    _load_clob_libs()
+    if not orders:
+        raise ValueError("批量下单列表不能为空")
+    client = await get_clob_client(user, db)
+
+    post_args = []
+    normalized = []
+    for spec in orders:
+        token_id = str(spec.get("token_id") or "")
+        price = float(spec.get("price") or 0)
+        size = float(spec.get("size") or 0)
+        usdc_amount = float(spec.get("usdc_amount") or 0)
+        if usdc_amount > 0:
+            raise ValueError("批量限价单需要传入明确的 price 和 size")
+
+        side, order_type = _validate_order(
+            str(spec.get("side") or "BUY"),
+            str(spec.get("order_type") or "GTC"),
+            price,
+            size,
+            usdc_amount,
+        )
+        tick_size = str(spec.get("tick_size") or "0.01")
+        price = _clamp_price(price, tick_size)
+        side_const = _Side.BUY if side == "BUY" else _Side.SELL
+        otype = getattr(_OrderType, order_type)
+        options = _PartialCreateOrderOptions(
+            tick_size=tick_size,
+            neg_risk=bool(spec.get("neg_risk", False)),
+        )
+        order_args = _OrderArgs(
+            token_id=token_id,
+            price=float(price),
+            size=float(size),
+            side=side_const,
+        )
+        signed = await _run_clob(client.create_order, order_args, options)
+        post_args.append(_PostOrdersV2Args(order=signed, orderType=otype))
+        normalized.append({
+            "token_id": token_id,
+            "price": price,
+            "size": size,
+            "side": side,
+            "order_type": order_type,
+            "market_slug": str(spec.get("market_slug") or ""),
+            "condition_id": str(spec.get("condition_id") or ""),
+        })
+
+    resp = await _run_clob(client.post_orders, post_args, post_only=post_only)
+    if isinstance(resp, dict) and not _batch_response_items(resp):
+        _ensure_clob_success(resp, "批量下单")
+    items = _batch_response_items(resp)
+
+    saved = []
+    failed = []
+    for idx, spec in enumerate(normalized):
+        item = items[idx] if idx < len(items) else (resp if len(normalized) == 1 else {})
+        if not _clob_success(item):
+            failed.append({**spec, "response": item})
+            continue
+        trade = Trade(
+            user_id=user.id,
+            market_slug=spec["market_slug"],
+            condition_id=spec["condition_id"],
+            token_id=spec["token_id"],
+            side=spec["side"],
+            order_type=spec["order_type"],
+            price=spec["price"],
+            size=spec["size"],
+            status="pending",
+            order_id=_clob_order_id(item),
+        )
+        db.add(trade)
+        saved.append((trade, item))
+
+    await db.commit()
+    orders_out = []
+    for trade, item in saved:
+        await db.refresh(trade)
+        orders_out.append({
+            "trade_id": trade.id,
+            "order_id": trade.order_id,
+            "token_id": trade.token_id,
+            "side": trade.side,
+            "order_type": trade.order_type,
+            "price": trade.price,
+            "size": trade.size,
+            "response": item,
+        })
+
+    return {
+        "success": len(failed) == 0,
+        "orders": orders_out,
+        "failed": failed,
+        "response": resp,
+    }
+
+
 async def place_market_order(
     user: User, db: AsyncSession,
     token_id: str, amount: float, side: str,
@@ -301,6 +613,7 @@ async def place_market_order(
     side, order_type = _validate_order(side, order_type, price=0.5, size=5, usdc_amount=amount)
     if amount <= 0:
         raise ValueError("下单金额必须大于 0")
+    amount = _floor_decimal(amount, 2)
     client = await get_clob_client(user, db)
 
     side_const = _Side.BUY if side == "BUY" else _Side.SELL

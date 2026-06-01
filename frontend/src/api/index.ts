@@ -66,6 +66,8 @@ export const btcApi = {
   marketOrder: (data: any) => api.post('/btc/market-order', data),
   sell: (data: any) => api.post('/btc/sell', data),
   positions: () => api.get('/btc/positions'),
+  portfolioDoctor: () => api.get('/btc/portfolio-doctor'),
+  notifyPortfolioDoctor: () => api.post('/btc/portfolio-doctor/notify'),
   orders: () => api.get('/btc/orders'),
   cancel: (id: string) => api.delete(`/btc/order/${id}`),
   cancelAll: () => api.post('/btc/cancel-all'),
@@ -97,18 +99,28 @@ export const politicalApi = {
 
 // Arbitrage
 export const arbitrageApi = {
-  scan: (threshold?: number) => api.get('/arbitrage/scan', { params: { threshold } }),
+  scan: (threshold?: number, budget?: number) => api.get('/arbitrage/scan', { params: { threshold, budget } }),
   results: () => api.get('/arbitrage/results'),
   execute: (data: any) => api.post('/arbitrage/execute', null, { params: data }),
 }
 
 // Opportunity scanners
 export const opportunityApi = {
+  advice: (data: any) => api.post('/opportunities/advice', data),
   slippage: (params?: any) => api.get('/opportunities/slippage', { params }),
+  slippageBatchBuy: (data: any) => api.post('/opportunities/slippage-batch-buy', data),
   crossEvent: (params?: any) => api.get('/opportunities/cross-event', { params }),
   rewards: (params?: any) => api.get('/opportunities/rewards', { params }),
   resolutionWatch: (params?: any) => api.get('/opportunities/resolution-watch', { params }),
   basketPrecheck: (params: any) => api.get('/opportunities/basket-precheck', { params }),
+  basketBuy: (data: any) => api.post('/opportunities/basket-buy', data),
+  basketShadow: (data: any) => api.post('/opportunities/basket-shadow', data),
+  crossHedgeBuy: (data: any) => api.post('/opportunities/cross-hedge-buy', data),
+  quickBuy: (data: any) => api.post('/opportunities/quick-buy', data),
+  quickSell: (data: any) => api.post('/opportunities/quick-sell', data),
+  makerQuote: (data: any) => api.post('/opportunities/maker-quote', data),
+  cancelAll: () => api.post('/opportunities/cancel-all'),
+  hedgeClose: (data: any) => api.post('/opportunities/hedge-close', data),
   btcAlerts: (params?: any) => api.get('/opportunities/btc-alerts', { params }),
   notifyBtcAlerts: (params?: any) => api.post('/opportunities/btc-alerts/notify', null, { params }),
   hedges: () => api.get('/opportunities/hedges'),
