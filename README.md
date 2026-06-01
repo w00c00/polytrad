@@ -16,6 +16,7 @@
 | **机会扫描** | 盘口滑点、同题价差、临近结算、奖励做市、BTC 动量、持仓对冲等专项扫描 |
 | **AI 风控** | 下单前输出中文风险提示、阻断理由、确认文案；可解释篮子/滑点/价差/结算/BTC 等机会 |
 | **持仓管理** | 实时查看持仓、盈亏、USDC 余额，支持快速卖出、仓位医生和复盘报告 |
+| **情报雷达** | 新闻催化、体育赛程匹配、聪明钱钱包流向，用于发现可观察机会和危险过期盘 |
 | **通知推送** | ServerChan（方糖）+ Telegram 推送，交易报告、持仓报告、扫描提醒 |
 
 ### AI 预测增强
@@ -44,6 +45,9 @@
 - **同题价差**：只在题目/日期关系能确认且双边深度可成交时启用智能双边；容量和毛利按可吃深度估算，避免显示离谱利润。
 - **临近结算**：过滤已结束、proposed/resolved/disputed、不可接单市场；不可买的盘只保留观察和复盘。
 - **市场到期**：除 BTC 短周期等标题已经明确到期窗口的市场外，扫描结果尽量显示到期时间，避免长期套仓。
+- **新闻催化**：用公开新闻 RSS 对活跃市场做热度匹配，只提示催化，不把新闻热度当作方向或套利。
+- **赛程雷达**：用 ESPN 公开赛程匹配 NBA/NHL/MLB/NFL 单场盘，标记已完赛、进行中、未匹配和长期盘。
+- **聪明钱**：聚合 Polymarket 公开成交流和公开已平仓数据，按钱包成交额、历史胜率、疑似推广账号等给出观察提示。
 
 ## 技术栈
 
@@ -95,6 +99,7 @@ polytrad/
 │   │   ├── opportunities.py      # 机会扫描和执行逻辑
 │   │   ├── opportunity_advisor.py # 下单前规则风控与中文提示
 │   │   ├── portfolio_doctor.py   # 仓位医生与复盘报告
+│   │   ├── intelligence.py       # 新闻、赛程、聪明钱情报雷达
 │   │   ├── polymarket.py         # Polymarket API 客户端 + 标题翻译
 │   │   ├── binance.py            # Binance API + 技术指标计算
 │   │   ├── btc_signal.py         # BTC 本地信号分析
@@ -316,6 +321,9 @@ certbot --nginx -d your-domain.com
 | POST | `/api/opportunities/basket-shadow` | 篮子影子挂单 |
 | GET | `/api/opportunities/rewards` | 奖励做市市场扫描 |
 | POST | `/api/opportunities/maker-quote` | 奖励做市委托 |
+| GET | `/api/opportunities/news-catalysts` | 新闻催化雷达 |
+| GET | `/api/opportunities/sports-schedule` | 体育赛程匹配雷达 |
+| GET | `/api/opportunities/smart-money` | 聪明钱钱包流向 |
 | GET | `/api/opportunities/hedges` | 持仓对冲建议 |
 | POST | `/api/opportunities/hedge-close` | 批量平仓 |
 | GET | `/api/opportunities/btc-alerts` | BTC 动量提醒 |

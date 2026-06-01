@@ -403,6 +403,11 @@ class DataAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_recent_trades(self, limit: int = 500, offset: int = 0) -> list[dict]:
+        resp = await self.client.get(f"{self.base}/trades", params={"limit": limit, "offset": offset})
+        resp.raise_for_status()
+        return resp.json()
+
 
 class CLOBAPI:
     """Polymarket CLOB API - 订单簿、价格 (公开读取无需认证)"""

@@ -45,6 +45,9 @@ SPORTS_KEYWORDS = [
     "world cup", "olympics", "copa america", "euro", "champions league",
     "premier league", "la liga", "bundesliga", "serie a", "ligue 1",
     "super bowl", "world series", "stanley cup", "playoffs",
+    # Polymarket 会把电竞也放在 sports/games 流里，tag 偶尔不完整
+    "esports", "league of legends", "lol", "counter-strike", "cs2",
+    "valorant", "dota", "game handicap", "match winner",
 ]
 
 
@@ -840,11 +843,21 @@ async def _scan_sports_markets_inner(db: AsyncSession | None) -> list[dict]:
     results = []
     seen_slugs = set()
 
-    events = await _fetch_gamma_pages(
+    tagged_events = await _fetch_gamma_pages(
         "events",
         {"tag_slug": "sports", "order": "volume24hr", "ascending": "false"},
         max_pages=20,
     )
+    fallback_events = await _fetch_gamma_pages(
+        "events",
+        {"order": "volume24hr", "ascending": "false"},
+        max_pages=10,
+    )
+
+    def is_sports_like(event: dict) -> bool:
+        tags = _extract_tags(event)
+        combined = _combined_text(event)
+        return "sports" in tags or any(kw in combined for kw in SPORTS_KEYWORDS)
 
     def is_game_event(event: dict, markets_info: list[dict]) -> bool:
         tags = _extract_tags(event)
@@ -854,6 +867,17 @@ async def _scan_sports_markets_inner(db: AsyncSession | None) -> list[dict]:
         if " vs " in title or " vs. " in title:
             return True
         return any(m.get("sports_market_type") and (m.get("game_start_bj") or "game" in str(m.get("sports_market_type"))) for m in markets_info)
+
+    events = []
+    for event in tagged_events + fallback_events:
+        slug = event.get("slug", "")
+        if not slug or slug in seen_slugs:
+            continue
+        if not is_sports_like(event):
+            continue
+        seen_slugs.add(slug)
+        events.append(event)
+    seen_slugs.clear()
 
     for event in events:
         slug = event.get("slug", "")

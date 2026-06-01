@@ -366,6 +366,166 @@
           </el-table>
         </el-card>
       </el-tab-pane>
+
+      <el-tab-pane label="新闻催化" name="news">
+        <el-card>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>新闻催化雷达</span>
+              <div>
+                <span style="margin-right:8px">买入金额</span>
+                <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
+                <el-select v-model="newsParams.category" size="small" style="width:110px;margin-right:8px">
+                  <el-option label="政治" value="politics" />
+                  <el-option label="体育" value="sports" />
+                  <el-option label="加密" value="crypto" />
+                  <el-option label="全部" value="all" />
+                </el-select>
+                <span style="margin-right:8px">小时</span>
+                <el-input-number v-model="newsParams.lookback_hours" :min="6" :max="168" size="small" style="width:100px;margin-right:8px" />
+                <el-button size="small" type="primary" :loading="newsLoading" @click="loadNews">扫描</el-button>
+              </div>
+            </div>
+          </template>
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="新闻雷达提示" description="新闻热度只代表有催化，不代表 YES 或 NO 哪边更便宜；快捷买入会走 AI 风控确认和 FOK，建议小额验证。" />
+          <el-table :data="newsResults" size="small" v-loading="newsLoading" max-height="560">
+            <el-table-column label="市场" min-width="260" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div>{{ row.title_zh || row.title }}</div>
+                <div style="font-size:12px;color:#909399">{{ row.latest_headline_zh || row.latest_headline || '暂无近期新闻标题' }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="热度" width="105">
+              <template #default="{ row }">
+                <el-tag :type="row.signal_score >= 70 ? 'danger' : row.signal_score >= 45 ? 'warning' : 'info'" size="small">
+                  {{ row.signal_level }} {{ Number(row.signal_score || 0).toFixed(0) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="新闻" width="80">
+              <template #default="{ row }">{{ row.news_count }}</template>
+            </el-table-column>
+            <el-table-column label="YES/NO" width="105">
+              <template #default="{ row }">${{ Number(row.yes_price || 0).toFixed(3) }} / ${{ Number(row.no_price || 0).toFixed(3) }}</template>
+            </el-table-column>
+            <el-table-column label="24h量" width="110">
+              <template #default="{ row }">${{ Math.round(row.volume_24h || 0).toLocaleString() }}</template>
+            </el-table-column>
+            <el-table-column prop="latest_news_bj" label="最新新闻" width="100" />
+            <el-table-column prop="end_date_bj" label="到期" width="110" />
+            <el-table-column label="操作" width="190" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="info" link @click="showAdvice(row, 'news', quickAmount)">AI</el-button>
+                <el-button size="small" type="primary" link :loading="actionLoading === actionKey(row, 'news-yes')" @click="buyNews(row, 0, 'YES')">买YES</el-button>
+                <el-button size="small" type="primary" link :disabled="!row.token_ids?.[1]" :loading="actionLoading === actionKey(row, 'news-no')" @click="buyNews(row, 1, 'NO')">买NO</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
+
+      <el-tab-pane label="赛程雷达" name="schedule">
+        <el-card>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>体育赛程匹配</span>
+              <div>
+                <span style="margin-right:8px">未来天数</span>
+                <el-input-number v-model="scheduleParams.days_ahead" :min="1" :max="30" size="small" style="width:100px;margin-right:8px" />
+                <el-button size="small" type="primary" :loading="scheduleLoading" @click="loadSchedule">匹配</el-button>
+              </div>
+            </div>
+          </template>
+          <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px" title="赛程过滤口径" description="该面板用 ESPN 公开赛程匹配 NBA/NHL/MLB/NFL 单场盘，用来发现已完赛、进行中或未匹配的危险盘；冠军/长期盘不会按单场过滤。" />
+          <el-table :data="scheduleResults" size="small" v-loading="scheduleLoading" max-height="560">
+            <el-table-column label="Polymarket 事件" min-width="260" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.title_zh || row.title }}</template>
+            </el-table-column>
+            <el-table-column label="联赛" width="80">
+              <template #default="{ row }">{{ row.league || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="匹配比赛" min-width="170" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.game || row.teams || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="game_time_bj" label="比赛时间" width="110" />
+            <el-table-column prop="game_status" label="状态" width="115" />
+            <el-table-column label="风险" width="90">
+              <template #default="{ row }">
+                <el-tag :type="riskTagType(row.risk_level)" size="small">{{ row.risk_level }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="action" label="处理建议" min-width="260" show-overflow-tooltip />
+          </el-table>
+        </el-card>
+      </el-tab-pane>
+
+      <el-tab-pane label="聪明钱" name="smart">
+        <el-card>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>聪明钱钱包流向</span>
+              <div>
+                <span style="margin-right:8px">跟买金额</span>
+                <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
+                <span style="margin-right:8px">小时</span>
+                <el-input-number v-model="smartParams.lookback_hours" :min="1" :max="168" size="small" style="width:90px;margin-right:8px" />
+                <span style="margin-right:8px">最小额</span>
+                <el-input-number v-model="smartParams.min_notional" :min="1" :max="100000" size="small" style="width:110px;margin-right:8px" />
+                <el-button size="small" type="primary" :loading="smartLoading" @click="loadSmartMoney">扫描</el-button>
+              </div>
+            </div>
+          </template>
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="跟单提示" :description="smartReport?.note || '聪明钱可能是对冲、做市或分批交易，只做观察信号；跟买只允许最近 BUY token 小额 FOK。'" />
+          <el-table :data="smartWallets" size="small" v-loading="smartLoading" max-height="560">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <el-table :data="row.recent_trades || []" size="small">
+                  <el-table-column prop="timestamp_bj" label="时间" width="95" />
+                  <el-table-column prop="side" label="方向" width="70" />
+                  <el-table-column label="市场" show-overflow-tooltip>
+                    <template #default="{ row: trade }">{{ trade.title_zh || trade.title }}</template>
+                  </el-table-column>
+                  <el-table-column prop="outcome" label="结果" width="90" />
+                  <el-table-column label="金额" width="90">
+                    <template #default="{ row: trade }">${{ Number(trade.notional || 0).toFixed(2) }}</template>
+                  </el-table-column>
+                  <el-table-column label="价格" width="80">
+                    <template #default="{ row: trade }">${{ Number(trade.price || 0).toFixed(3) }}</template>
+                  </el-table-column>
+                </el-table>
+              </template>
+            </el-table-column>
+            <el-table-column label="钱包" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div>{{ row.pseudonym || row.name || row.wallet }}</div>
+                <div style="font-size:12px;color:#909399">{{ row.wallet }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="评分" width="80">
+              <template #default="{ row }">{{ Number(row.smart_score || 0).toFixed(1) }}</template>
+            </el-table-column>
+            <el-table-column label="成交额" width="100">
+              <template #default="{ row }">${{ Number(row.total_notional || 0).toFixed(0) }}</template>
+            </el-table-column>
+            <el-table-column label="买/卖" width="125">
+              <template #default="{ row }">${{ Number(row.buy_notional || 0).toFixed(0) }} / ${{ Number(row.sell_notional || 0).toFixed(0) }}</template>
+            </el-table-column>
+            <el-table-column prop="trades_count" label="笔数" width="70" />
+            <el-table-column label="历史胜率" width="95">
+              <template #default="{ row }">{{ row.closed_win_rate == null ? '-' : `${Number(row.closed_win_rate).toFixed(1)}%` }}</template>
+            </el-table-column>
+            <el-table-column label="最新BUY" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.last_buy_trade?.title_zh || row.last_buy_trade?.title || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="150" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="info" link @click="showAdvice(row, 'smart_money', quickAmount)">AI</el-button>
+                <el-button size="small" type="primary" :disabled="!row.last_buy_trade" :loading="actionLoading === actionKey(row, 'smart-follow')" @click="followSmartMoney(row)">跟买BUY</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog v-model="showHelp" title="套利说明" width="650">
@@ -550,6 +710,19 @@ const btcNotifyLoading = ref(false)
 const btcParams = ref({ min_edge: 0.04 })
 const btcResults = ref<any[]>([])
 
+const newsLoading = ref(false)
+const newsParams = ref({ category: 'politics', lookback_hours: 48, max_candidates: 24 })
+const newsResults = ref<any[]>([])
+
+const scheduleLoading = ref(false)
+const scheduleParams = ref({ days_ahead: 7, max_candidates: 120 })
+const scheduleResults = ref<any[]>([])
+
+const smartLoading = ref(false)
+const smartParams = ref({ lookback_hours: 24, limit: 500, min_notional: 50, top_wallets: 15 })
+const smartReport = ref<any>(null)
+const smartWallets = ref<any[]>([])
+
 async function scan() {
   loading.value = true
   try {
@@ -633,7 +806,7 @@ async function precheckSelectedBasket() {
 }
 
 function actionKey(row: any, action: string) {
-  return `${action}:${row?.event_slug || row?.slug || row?.token_id || row?.asset || row?.topic || row?.title || ''}`
+  return `${action}:${row?.event_slug || row?.market_slug || row?.slug || row?.token_id || row?.asset || row?.wallet || row?.topic || row?.title || ''}`
 }
 
 function basketStatusLabel(row: any) {
@@ -674,6 +847,8 @@ function adviceAlertType(data: any) {
 
 function adviceKindFromAction(action: string) {
   if (action.startsWith('res-')) return 'resolution'
+  if (action.startsWith('news-')) return 'news'
+  if (action.startsWith('smart')) return 'smart_money'
   if (action === 'slippage') return 'slippage'
   if (action === 'btc') return 'btc'
   if (action === 'maker') return 'rewards'
@@ -923,6 +1098,33 @@ function buyBtcAlert(row: any) {
   })
 }
 
+function buyNews(row: any, idx: number, label: string) {
+  return quickBuy(row, quickAmount.value, `news-${label.toLowerCase()}`, {
+    token_id: row.token_ids?.[idx],
+    market_slug: row.slug || '',
+    condition_id: row.condition_id || '',
+    tick_size: row.tick_size || '0.01',
+    neg_risk: row.neg_risk || false,
+    advice_kind: 'news',
+  })
+}
+
+async function followSmartMoney(row: any) {
+  const trade = row.last_buy_trade
+  if (!trade?.token_id) {
+    ElMessage.warning('没有可跟买的最近 BUY token')
+    return
+  }
+  return quickBuy(trade, quickAmount.value, 'smart-follow', {
+    token_id: trade.token_id,
+    market_slug: trade.market_slug || '',
+    condition_id: trade.condition_id || '',
+    tick_size: '0.01',
+    advice_kind: 'smart_money',
+    advice_context: { wallet: row.wallet },
+  })
+}
+
 async function quoteMaker(row: any) {
   const key = actionKey(row, 'maker')
   actionLoading.value = key
@@ -1092,6 +1294,41 @@ async function notifyBtc() {
     const { data } = await opportunityApi.notifyBtcAlerts(btcParams.value)
     ElMessage.success(data.message || '已推送')
   } finally { btcNotifyLoading.value = false }
+}
+
+async function loadNews() {
+  newsLoading.value = true
+  try {
+    const { data } = await opportunityApi.newsCatalysts(newsParams.value)
+    newsResults.value = data || []
+    if (newsResults.value.length === 0) ElMessage.info('暂无新闻催化信号')
+  } finally { newsLoading.value = false }
+}
+
+async function loadSchedule() {
+  scheduleLoading.value = true
+  try {
+    const { data } = await opportunityApi.sportsSchedule(scheduleParams.value)
+    scheduleResults.value = data || []
+    if (scheduleResults.value.length === 0) ElMessage.info('暂无赛程匹配结果')
+  } finally { scheduleLoading.value = false }
+}
+
+async function loadSmartMoney() {
+  smartLoading.value = true
+  try {
+    const { data } = await opportunityApi.smartMoney(smartParams.value)
+    smartReport.value = data
+    smartWallets.value = data?.wallets || []
+    if (smartWallets.value.length === 0) ElMessage.info('暂无满足条件的聪明钱钱包')
+  } finally { smartLoading.value = false }
+}
+
+function riskTagType(level: string) {
+  if (level === 'danger') return 'danger'
+  if (level === 'warning') return 'warning'
+  if (level === 'success') return 'success'
+  return 'info'
 }
 
 watch(aiProviders, (list) => {

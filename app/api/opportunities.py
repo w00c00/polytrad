@@ -6,6 +6,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
 from app.services.opportunity_advisor import build_opportunity_advice
+from app.services.intelligence import scan_news_catalysts, scan_smart_money, scan_sports_schedule_radar
 from app.services.notification import notify_user
 from app.services.opportunities import (
     basket_precheck,
@@ -138,6 +139,36 @@ async def resolution_watch(
     user: User = Depends(get_current_user),
 ):
     return await scan_resolution_watch(hours, min_volume_24h)
+
+
+@router.get("/news-catalysts")
+async def news_catalysts(
+    category: str = Query("politics", pattern="^(all|politics|sports|crypto)$"),
+    lookback_hours: int = Query(48, ge=6, le=168),
+    max_candidates: int = Query(24, ge=5, le=80),
+    user: User = Depends(get_current_user),
+):
+    return await scan_news_catalysts(category, lookback_hours, max_candidates)
+
+
+@router.get("/sports-schedule")
+async def sports_schedule(
+    days_ahead: int = Query(7, ge=1, le=30),
+    max_candidates: int = Query(120, ge=20, le=300),
+    user: User = Depends(get_current_user),
+):
+    return await scan_sports_schedule_radar(max_candidates, days_ahead)
+
+
+@router.get("/smart-money")
+async def smart_money(
+    lookback_hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(500, ge=50, le=1000),
+    min_notional: float = Query(50, ge=1, le=100000),
+    top_wallets: int = Query(15, ge=3, le=50),
+    user: User = Depends(get_current_user),
+):
+    return await scan_smart_money(lookback_hours, limit, min_notional, top_wallets)
 
 
 @router.get("/basket-precheck")

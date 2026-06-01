@@ -10,8 +10,8 @@
     </div>
 
     <div class="trade-bar">
-      <span>{{ tab === 'basket' ? '预算' : tab === 'rewards' ? '单边金额' : tab === 'cross' ? '双边预算' : '买入金额' }}</span>
-      <input v-model.number="quickAmount" type="number" min="1" step="1" />
+      <span>{{ tradeBarLabel }}</span>
+      <input v-if="tab !== 'schedule'" v-model.number="quickAmount" type="number" min="1" step="1" />
       <button v-if="tab === 'rewards'" class="scan-btn danger" :disabled="busyKey === 'cancel-all'" @click="cancelAllOrders">全撤</button>
       <button class="scan-btn" @click="reload">重扫</button>
     </div>
@@ -105,6 +105,47 @@
             {{ busyKey === actionKey(item, 'btc') ? '提交中...' : '买入' }}
           </button>
         </template>
+
+        <template v-else-if="tab === 'news'">
+          <div class="card-title">{{ item.title_zh || item.title }}</div>
+          <div class="card-info">
+            <span>热度 {{ item.signal_level }} {{ Number(item.signal_score || 0).toFixed(0) }}</span>
+            <span>新闻 {{ item.news_count }}</span>
+            <span>YES ${{ Number(item.yes_price || 0).toFixed(3) }}</span>
+          </div>
+          <div class="card-note">{{ item.latest_headline_zh || item.latest_headline || '暂无近期新闻标题' }}</div>
+          <div class="card-note">最新 {{ item.latest_news_bj || '-' }}，到期 {{ item.end_date_bj || '-' }}</div>
+          <div class="action-row">
+            <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'news-yes')" @click="buyNews(item, 0, 'YES')">买YES</button>
+            <button class="action-btn primary" :disabled="!item.token_ids?.[1] || busyKey === actionKey(item, 'news-no')" @click="buyNews(item, 1, 'NO')">买NO</button>
+          </div>
+        </template>
+
+        <template v-else-if="tab === 'schedule'">
+          <div class="card-title">{{ item.title_zh || item.title }}</div>
+          <div class="card-info">
+            <span>{{ item.league || '长期盘' }}</span>
+            <span>{{ item.game_status }}</span>
+            <span>{{ item.risk_level }}</span>
+          </div>
+          <div class="card-note">{{ item.game || item.teams || '未匹配单场赛程' }}</div>
+          <div class="card-note">比赛 {{ item.game_time_bj || '-' }}，市场到期 {{ item.end_date_bj || '-' }}</div>
+          <div class="card-note">{{ item.action }}</div>
+        </template>
+
+        <template v-else-if="tab === 'smart'">
+          <div class="card-title">{{ item.pseudonym || item.name || item.wallet }}</div>
+          <div class="card-info">
+            <span>评分 {{ Number(item.smart_score || 0).toFixed(1) }}</span>
+            <span>成交 ${{ Number(item.total_notional || 0).toFixed(0) }}</span>
+            <span>胜率 {{ item.closed_win_rate == null ? '-' : `${Number(item.closed_win_rate).toFixed(1)}%` }}</span>
+          </div>
+          <div class="card-note">最新 BUY：{{ item.last_buy_trade?.title_zh || item.last_buy_trade?.title || '-' }}</div>
+          <div class="card-note">{{ item.risk_note }}</div>
+          <button class="action-btn primary" :disabled="!item.last_buy_trade || busyKey === actionKey(item, 'smart-follow')" @click="followSmartMoney(item)">
+            {{ busyKey === actionKey(item, 'smart-follow') ? '提交中...' : '跟买最近BUY' }}
+          </button>
+        </template>
       </div>
     </div>
   </div>
@@ -128,9 +169,20 @@ const tabs = [
   { key: 'rewards', label: '做市' },
   { key: 'resolution', label: '结算' },
   { key: 'btc', label: 'BTC' },
+  { key: 'news', label: '新闻' },
+  { key: 'schedule', label: '赛程' },
+  { key: 'smart', label: '聪明钱' },
 ]
 
 const items = computed(() => dataMap.value[tab.value] || [])
+const tradeBarLabel = computed(() => {
+  if (tab.value === 'basket') return '预算'
+  if (tab.value === 'rewards') return '单边金额'
+  if (tab.value === 'cross') return '双边预算'
+  if (tab.value === 'schedule') return '赛程匹配'
+  if (tab.value === 'smart') return '跟买金额'
+  return '买入金额'
+})
 
 async function switchTab(key: string) {
   tab.value = key
@@ -164,6 +216,15 @@ async function loadData() {
     } else if (tab.value === 'btc') {
       const resp = await opportunityApi.btcAlerts({ min_edge: 0.04 })
       data = resp.data || []
+    } else if (tab.value === 'news') {
+      const resp = await opportunityApi.newsCatalysts({ category: 'politics', lookback_hours: 48, max_candidates: 16 })
+      data = resp.data || []
+    } else if (tab.value === 'schedule') {
+      const resp = await opportunityApi.sportsSchedule({ days_ahead: 7, max_candidates: 80 })
+      data = resp.data || []
+    } else if (tab.value === 'smart') {
+      const resp = await opportunityApi.smartMoney({ lookback_hours: 24, limit: 400, min_notional: 50, top_wallets: 12 })
+      data = resp.data?.wallets || []
     }
     dataMap.value = { ...dataMap.value, [tab.value]: data }
   } catch {
@@ -174,7 +235,7 @@ async function loadData() {
 }
 
 function actionKey(row: any, action: string) {
-  return `${action}:${row?.event_slug || row?.slug || row?.token_id || row?.topic || row?.title || ''}`
+  return `${action}:${row?.event_slug || row?.market_slug || row?.slug || row?.token_id || row?.wallet || row?.topic || row?.title || ''}`
 }
 
 function basketStatusLabel(item: any) {
@@ -186,6 +247,8 @@ function basketStatusLabel(item: any) {
 
 function adviceKindFromAction(action: string) {
   if (action.startsWith('res-')) return 'resolution'
+  if (action.startsWith('news-')) return 'news'
+  if (action.startsWith('smart')) return 'smart_money'
   if (action === 'slippage') return 'slippage'
   if (action === 'btc') return 'btc'
   if (action === 'maker') return 'rewards'
@@ -335,6 +398,33 @@ function buyBtcAlert(item: any) {
     tick_size: market.tick_size || '0.01',
     neg_risk: market.neg_risk || false,
     advice_kind: 'btc',
+  })
+}
+
+function buyNews(item: any, idx: number, label: string) {
+  return quickBuy(item, `news-${label.toLowerCase()}`, {
+    token_id: item.token_ids?.[idx],
+    market_slug: item.slug || '',
+    condition_id: item.condition_id || '',
+    tick_size: item.tick_size || '0.01',
+    neg_risk: item.neg_risk || false,
+    advice_kind: 'news',
+  })
+}
+
+function followSmartMoney(item: any) {
+  const trade = item.last_buy_trade
+  if (!trade?.token_id) {
+    ElMessage.warning('没有可跟买的最近 BUY token')
+    return
+  }
+  return quickBuy(trade, 'smart-follow', {
+    token_id: trade.token_id,
+    market_slug: trade.market_slug || '',
+    condition_id: trade.condition_id || '',
+    tick_size: '0.01',
+    advice_kind: 'smart_money',
+    advice_context: { wallet: item.wallet },
   })
 }
 

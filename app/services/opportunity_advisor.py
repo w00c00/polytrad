@@ -67,6 +67,10 @@ def _common_title(item: dict) -> str:
         item.get("title"),
         item.get("question"),
         item.get("topic"),
+        item.get("pseudonym"),
+        item.get("name"),
+        (item.get("last_buy_trade") or {}).get("title_zh"),
+        (item.get("last_buy_trade") or {}).get("title"),
         item.get("event_slug"),
         item.get("slug"),
         default="机会",
@@ -421,6 +425,118 @@ def _advice_rewards(item: dict, amount: float, context: dict) -> dict:
     return _finish(resp, f"奖励做市：YES/NO 两边各约 ${amount:.2f}，当前点差 {spread * 100:.2f}%。", "medium")
 
 
+def _advice_news(item: dict, amount: float, context: dict) -> dict:
+    resp = _base_response("news", item, amount)
+    checks = resp["checks"]
+    blockers = resp["blockers"]
+    warnings = resp["warnings"]
+    tips = resp["tips"]
+    news_count = int(_num(item.get("news_count"), 0))
+    score = _num(item.get("signal_score"))
+    yes_price = _num(item.get("yes_price"))
+    no_price = _num(item.get("no_price"))
+    token_ids = item.get("token_ids") or []
+
+    resp["metrics"].update({
+        "amount": amount,
+        "news_count": news_count,
+        "signal_score": score,
+        "yes_price": yes_price,
+        "no_price": no_price,
+    })
+
+    if not token_ids and not item.get("token_id"):
+        blockers.append("缺少市场 token，不能从新闻雷达快捷下单")
+        _add_check(checks, "token", "fail", "missing")
+    else:
+        _add_check(checks, "token", "pass", f"{len(token_ids) or 1} 个")
+
+    if news_count <= 0:
+        warnings.append("没有抓到近期新闻，只能当作普通盘口观察")
+        _add_check(checks, "新闻热度", "warn", "0")
+    elif score >= 70:
+        _add_check(checks, "新闻热度", "pass", f"{news_count} 条 / {score:.1f}")
+    else:
+        warnings.append(f"新闻热度分 {score:.1f} 不高，可能只是低相关报道")
+        _add_check(checks, "新闻热度", "warn", f"{news_count} 条 / {score:.1f}")
+
+    if amount <= 0:
+        blockers.append("下单金额必须大于 0")
+    elif amount > 50:
+        warnings.append("新闻催化方向不确定，单笔金额偏大")
+
+    if yes_price > 0.90 or no_price > 0.90:
+        warnings.append("其中一边价格已接近 0.9，新闻可能已经被定价")
+
+    tips.extend([
+        "先点开原始新闻和 Polymarket 规则文本，确认新闻与结算条件直接相关",
+        "新闻热度不是方向信号，适合小额 FOK 或只加入观察",
+        "若新闻来自单一来源或标题党，不要跟随盘口追价",
+    ])
+    return _finish(resp, f"新闻催化：{news_count} 条近期新闻，热度分 {score:.1f}，本次金额 ${amount:.2f}。", "high")
+
+
+def _advice_smart_money(item: dict, amount: float, context: dict) -> dict:
+    resp = _base_response("smart_money", item, amount)
+    checks = resp["checks"]
+    blockers = resp["blockers"]
+    warnings = resp["warnings"]
+    tips = resp["tips"]
+
+    trade = item.get("last_buy_trade") or item
+    total_notional = _num(item.get("total_notional") or trade.get("notional"))
+    smart_score = _num(item.get("smart_score"))
+    closed_win_rate = item.get("closed_win_rate")
+    closed_pnl = _num(item.get("closed_pnl"))
+    token_id = trade.get("token_id") or item.get("token_id")
+    side = str(trade.get("side") or "").upper()
+
+    resp["metrics"].update({
+        "amount": amount,
+        "total_notional": total_notional,
+        "smart_score": smart_score,
+        "closed_win_rate": closed_win_rate,
+        "closed_pnl": closed_pnl,
+        "side": side,
+    })
+
+    if not token_id:
+        blockers.append("没有可跟买的 BUY token")
+        _add_check(checks, "跟买 token", "fail", "missing")
+    elif side and side != "BUY":
+        blockers.append("最近交易不是 BUY，不做一键跟买")
+        _add_check(checks, "跟买方向", "fail", side)
+    else:
+        _add_check(checks, "跟买 token", "pass", trade.get("outcome") or token_id[:10])
+
+    if total_notional < 50:
+        warnings.append("该钱包近期成交额偏小，参考意义有限")
+        _add_check(checks, "资金流", "warn", f"${total_notional:.2f}")
+    else:
+        _add_check(checks, "资金流", "pass", f"${total_notional:.2f}")
+
+    if closed_win_rate is None:
+        warnings.append("没有可用的公开已平仓胜率，不能判断历史能力")
+    elif float(closed_win_rate) < 45:
+        warnings.append(f"公开已平仓胜率只有 {float(closed_win_rate):.1f}%")
+    if closed_pnl < 0:
+        warnings.append(f"公开已平仓 PnL 为 ${closed_pnl:.2f}，不要盲跟")
+    if item.get("copy_trade_promo"):
+        warnings.append("该账号简介疑似跟单/推广，可能不是原始聪明钱")
+
+    if amount <= 0:
+        blockers.append("下单金额必须大于 0")
+    elif amount > 50:
+        warnings.append("跟单信息有滞后，建议降低金额或只观察")
+
+    tips.extend([
+        "聪明钱可能是在对冲、做市或分批出入，不等于方向判断",
+        "只跟最近 BUY 交易的小额 FOK，不追 SELL 或未知方向",
+        "成交后继续观察该钱包是否反向卖出",
+    ])
+    return _finish(resp, f"聪明钱：近段成交 ${total_notional:.2f}，评分 {smart_score:.1f}，本次跟买 ${amount:.2f}。", "high")
+
+
 def build_opportunity_advice(kind: str, item: dict, amount: float = 0, context: dict | None = None) -> dict:
     context = context or {}
     kind = (kind or "").lower().strip()
@@ -438,6 +554,10 @@ def build_opportunity_advice(kind: str, item: dict, amount: float = 0, context: 
         return _advice_btc(item, amount, context)
     if kind == "rewards":
         return _advice_rewards(item, amount, context)
+    if kind in ("news", "news_catalyst"):
+        return _advice_news(item, amount, context)
+    if kind in ("smart", "smart_money"):
+        return _advice_smart_money(item, amount, context)
 
     resp = _base_response(kind or "unknown", item, amount)
     resp["warnings"].append("未知机会类型，只能做通用检查")
