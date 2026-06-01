@@ -129,6 +129,20 @@ export const opportunityApi = {
   hedges: () => api.get('/opportunities/hedges'),
 }
 
+// Strategy watch
+export const strategyApi = {
+  modules: () => api.get('/strategy/modules'),
+  domainCandidates: () => api.get('/strategy/domain-candidates'),
+  paperSignals: (limit = 20) => api.get('/strategy/paper-signals', { params: { limit } }),
+  paperEvaluate: (data: any) => api.post('/strategy/paper-evaluate', data),
+  discipline: (data: any) => api.post('/strategy/discipline', data),
+  electionLiveCount: (data: any) => api.post('/strategy/election-live-count', data),
+  inPlay: (data: any) => api.post('/strategy/in-play', data),
+  championship: (data: any) => api.post('/strategy/championship', data),
+  domainFit: (data: any) => api.post('/strategy/domain-fit', data),
+  worldCupTags: (marketTitle?: string) => api.get('/strategy/world-cup-tags', { params: { market_title: marketTitle } }),
+}
+
 // AI
 export const aiApi = {
   providers: () => api.get('/ai/providers'),

@@ -15,6 +15,7 @@ const routes = [
       { path: 'hot', name: 'HotScan', component: () => import('./views/HotScan.vue') },
       { path: 'political', name: 'Political', component: () => import('./views/Political.vue') },
       { path: 'arbitrage', name: 'Arbitrage', component: () => import('./views/Arbitrage.vue') },
+      { path: 'strategy', name: 'StrategyWatch', component: () => import('./views/StrategyWatch.vue') },
       { path: 'ai', name: 'AIAnalysis', component: () => import('./views/AIAnalysis.vue') },
       { path: 'positions', name: 'Positions', component: () => import('./views/Positions.vue') },
       { path: 'settings', name: 'Settings', component: () => import('./views/Settings.vue') },
