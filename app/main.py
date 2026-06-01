@@ -57,7 +57,7 @@ app.add_middleware(
 )
 
 # 注册路由
-from app.api import auth, admin, wallet, btc, sports, hot, political, arbitrage, opportunities, ai, notify
+from app.api import auth, admin, wallet, btc, sports, hot, political, arbitrage, opportunities, ai, notify, strategy
 
 app.include_router(auth.router)
 app.include_router(admin.router)
@@ -70,6 +70,7 @@ app.include_router(arbitrage.router)
 app.include_router(opportunities.router)
 app.include_router(ai.router)
 app.include_router(notify.router)
+app.include_router(strategy.router)
 
 # 前端静态文件
 import os

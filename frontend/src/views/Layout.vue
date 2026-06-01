@@ -21,6 +21,9 @@
         <el-menu-item index="/arbitrage">
           <el-icon><Switch /></el-icon><span>事件套利</span>
         </el-menu-item>
+        <el-menu-item index="/strategy">
+          <el-icon><TrendCharts /></el-icon><span>策略观察</span>
+        </el-menu-item>
         <el-menu-item index="/ai">
           <el-icon><MagicStick /></el-icon><span>AI分析</span>
         </el-menu-item>
