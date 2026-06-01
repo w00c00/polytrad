@@ -12,6 +12,7 @@
     <div class="trade-bar">
       <span>{{ tradeBarLabel }}</span>
       <input v-if="tab !== 'schedule'" v-model.number="quickAmount" type="number" min="1" step="1" />
+      <input v-if="tab === 'smart'" v-model.number="smartAutoSeconds" type="number" min="0" step="5" placeholder="刷新秒" />
       <button v-if="tab === 'rewards'" class="scan-btn danger" :disabled="busyKey === 'cancel-all'" @click="cancelAllOrders">全撤</button>
       <button class="scan-btn" @click="reload">重扫</button>
     </div>
@@ -116,8 +117,9 @@
           <div class="card-note">{{ item.latest_headline_zh || item.latest_headline || '暂无近期新闻标题' }}</div>
           <div class="card-note">最新 {{ item.latest_news_bj || '-' }}，到期 {{ item.end_date_bj || '-' }}</div>
           <div class="action-row">
-            <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'news-yes')" @click="buyNews(item, 0, 'YES')">买YES</button>
-            <button class="action-btn primary" :disabled="!item.token_ids?.[1] || busyKey === actionKey(item, 'news-no')" @click="buyNews(item, 1, 'NO')">买NO</button>
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'news-ai')" @click="reviewMobileAi(item, 'news')">AI复核</button>
+            <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'news-ai') || busyKey === actionKey(item, 'news-yes')" @click="buyNews(item, 0, 'YES')">买YES</button>
+            <button class="action-btn primary" :disabled="!item.token_ids?.[1] || busyKey === actionKey(item, 'news-ai') || busyKey === actionKey(item, 'news-no')" @click="buyNews(item, 1, 'NO')">买NO</button>
           </div>
         </template>
 
@@ -130,7 +132,13 @@
           </div>
           <div class="card-note">{{ item.game || item.teams || '未匹配单场赛程' }}</div>
           <div class="card-note">比赛 {{ item.game_time_bj || '-' }}，市场到期 {{ item.end_date_bj || '-' }}</div>
+          <div class="card-note">YES ${{ Number(item.yes_price || 0).toFixed(3) }} / NO ${{ Number(item.no_price || 0).toFixed(3) }}</div>
           <div class="card-note">{{ item.action }}</div>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'schedule-ai')" @click="reviewMobileAi(item, 'schedule')">AI复核</button>
+            <button class="action-btn primary" :disabled="!item.can_buy || busyKey === actionKey(item, 'schedule-ai') || busyKey === actionKey(item, 'schedule-yes')" @click="buySchedule(item, 0, 'YES')">买YES</button>
+            <button class="action-btn primary" :disabled="!item.can_buy || !item.token_ids?.[1] || busyKey === actionKey(item, 'schedule-ai') || busyKey === actionKey(item, 'schedule-no')" @click="buySchedule(item, 1, 'NO')">买NO</button>
+          </div>
         </template>
 
         <template v-else-if="tab === 'smart'">
@@ -152,8 +160,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { arbitrageApi, opportunityApi } from '../../api'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { aiApi, arbitrageApi, opportunityApi } from '../../api'
 import { ElMessage } from 'element-plus'
 
 const tab = ref('basket')
@@ -161,6 +169,9 @@ const loading = ref(false)
 const dataMap = ref<Record<string, any[]>>({})
 const quickAmount = ref(10)
 const busyKey = ref('')
+const smartAutoSeconds = ref(0)
+const aiConfigId = ref<number | null>(null)
+let smartAutoTimer: ReturnType<typeof setInterval> | null = null
 
 const tabs = [
   { key: 'basket', label: '篮子' },
@@ -195,6 +206,7 @@ async function reload() {
 }
 
 async function loadData() {
+  if (loading.value) return
   loading.value = true
   try {
     let data: any[] = []
@@ -248,6 +260,7 @@ function basketStatusLabel(item: any) {
 function adviceKindFromAction(action: string) {
   if (action.startsWith('res-')) return 'resolution'
   if (action.startsWith('news-')) return 'news'
+  if (action.startsWith('schedule-')) return 'schedule'
   if (action.startsWith('smart')) return 'smart_money'
   if (action === 'slippage') return 'slippage'
   if (action === 'btc') return 'btc'
@@ -402,14 +415,93 @@ function buyBtcAlert(item: any) {
 }
 
 function buyNews(item: any, idx: number, label: string) {
-  return quickBuy(item, `news-${label.toLowerCase()}`, {
-    token_id: item.token_ids?.[idx],
-    market_slug: item.slug || '',
-    condition_id: item.condition_id || '',
-    tick_size: item.tick_size || '0.01',
-    neg_risk: item.neg_risk || false,
-    advice_kind: 'news',
+  return confirmMobileAi(item, 'news', label).then((ok) => {
+    if (!ok) return
+    return quickBuy(item, `news-${label.toLowerCase()}`, {
+      token_id: item.token_ids?.[idx],
+      market_slug: item.slug || '',
+      condition_id: item.condition_id || '',
+      tick_size: item.tick_size || '0.01',
+      neg_risk: item.neg_risk || false,
+      advice_kind: 'news',
+    })
   })
+}
+
+function buySchedule(item: any, idx: number, label: string) {
+  if (!item.can_buy) {
+    ElMessage.warning(item.trade_disabled_reason || '该赛程市场当前不可下单')
+    return
+  }
+  return confirmMobileAi(item, 'schedule', label).then((ok) => {
+    if (!ok) return
+    return quickBuy(item, `schedule-${label.toLowerCase()}`, {
+      token_id: item.token_ids?.[idx],
+      market_slug: item.market_slug || item.slug || '',
+      condition_id: item.condition_id || '',
+      tick_size: item.tick_size || '0.01',
+      neg_risk: item.neg_risk || false,
+      advice_kind: 'schedule',
+    })
+  })
+}
+
+async function confirmMobileAi(item: any, kind: 'news' | 'schedule', side: string) {
+  if (!aiConfigId.value) {
+    ElMessage.warning('没有可用 AI 模型，已阻断新闻/赛程快捷买入')
+    return false
+  }
+  const key = actionKey(item, `${kind}-ai`)
+  const payload = {
+    kind,
+    side,
+    title: item.title_zh || item.question_zh || item.title || item.question,
+    yes_price: item.yes_price,
+    no_price: item.no_price,
+    end_date_bj: item.end_date_bj,
+    latest_headline: item.latest_headline_zh || item.latest_headline,
+    game_status: item.game_status,
+    game_time_bj: item.game_time_bj,
+    league: item.league || item.league_guess,
+  }
+  busyKey.value = key
+  try {
+    const { data } = await aiApi.analyze({
+      ai_config_id: aiConfigId.value,
+      system_prompt: '你是 Polymarket 交易前风控员，资金安全第一。必须用简体中文回答。',
+      prompt: `请复核这个${kind === 'news' ? '新闻催化' : '赛程'}交易。第一行必须写：结论：通过 / 谨慎 / 禁止。若信息不足或不建议买入 ${side}，请写禁止。\n${JSON.stringify(payload, null, 2)}`,
+    })
+    const text = data.result || ''
+    window.alert(text)
+    if (/结论[:：]\s*禁止|禁止下单|不要下单|不建议/.test(text)) return false
+    return window.confirm(`AI 未阻断，继续提交 ${side} FOK 买入？`)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
+    return false
+  } finally {
+    busyKey.value = ''
+  }
+}
+
+async function reviewMobileAi(item: any, kind: 'news' | 'schedule') {
+  if (!aiConfigId.value) {
+    ElMessage.warning('没有可用 AI 模型')
+    return
+  }
+  const key = actionKey(item, `${kind}-ai`)
+  busyKey.value = key
+  try {
+    const { data } = await aiApi.analyze({
+      ai_config_id: aiConfigId.value,
+      system_prompt: '你是 Polymarket 交易前风控员，资金安全第一。必须用简体中文回答。',
+      prompt: `请复核这个${kind === 'news' ? '新闻催化' : '赛程'}机会。第一行必须写：结论：通过 / 谨慎 / 禁止。判断信息是否和市场规则直接相关，以及当前价格是否值得买。\n${JSON.stringify(item, null, 2).slice(0, 6000)}`,
+    })
+    window.alert(data.result || 'AI 没有返回内容')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
+  } finally {
+    busyKey.value = ''
+  }
 }
 
 function followSmartMoney(item: any) {
@@ -459,7 +551,30 @@ async function cancelAllOrders() {
   }
 }
 
-onMounted(loadData)
+function resetSmartAutoRefresh() {
+  if (smartAutoTimer) {
+    clearInterval(smartAutoTimer)
+    smartAutoTimer = null
+  }
+  const seconds = Number(smartAutoSeconds.value || 0)
+  if (tab.value === 'smart' && seconds >= 5) {
+    smartAutoTimer = setInterval(() => {
+      loadData()
+    }, seconds * 1000)
+  }
+}
+
+watch([smartAutoSeconds, tab], resetSmartAutoRefresh)
+
+onMounted(() => {
+  loadData()
+  aiApi.providers().then(({ data }) => {
+    if (data?.[0]) aiConfigId.value = data[0].id
+  }).catch(() => {})
+})
+onUnmounted(() => {
+  if (smartAutoTimer) clearInterval(smartAutoTimer)
+})
 </script>
 
 <style scoped>
@@ -484,6 +599,7 @@ onMounted(loadData)
 .action-btn { margin-top: 10px; width: 100%; height: 34px; border: none; border-radius: 7px; font-size: 13px; font-weight: bold; }
 .action-row .action-btn { margin-top: 0; flex: 1; }
 .action-btn.primary { background: #409eff; color: #fff; }
+.action-btn.secondary { background: #ecf5ff; color: #409eff; border: 1px solid #b3d8ff; }
 .action-btn.warn { background: #e6a23c; color: #fff; }
 .action-btn:disabled { opacity: 0.45; }
 .empty-hint { text-align: center; color: #909399; padding: 40px 0; font-size: 14px; }

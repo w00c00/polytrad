@@ -476,6 +476,58 @@ def _advice_news(item: dict, amount: float, context: dict) -> dict:
     return _finish(resp, f"新闻催化：{news_count} 条近期新闻，热度分 {score:.1f}，本次金额 ${amount:.2f}。", "high")
 
 
+def _advice_schedule(item: dict, amount: float, context: dict) -> dict:
+    resp = _base_response("schedule", item, amount)
+    checks = resp["checks"]
+    blockers = resp["blockers"]
+    warnings = resp["warnings"]
+    tips = resp["tips"]
+    token_ids = item.get("token_ids") or []
+    yes_price = _num(item.get("yes_price"))
+    no_price = _num(item.get("no_price"))
+    status = str(item.get("game_status") or "")
+    league = item.get("league") or item.get("league_guess") or "-"
+
+    resp["metrics"].update({
+        "amount": amount,
+        "league": league,
+        "game_status": status,
+        "yes_price": yes_price,
+        "no_price": no_price,
+    })
+
+    if not token_ids:
+        blockers.append("缺少可交易 token，不能从赛程雷达下单")
+        _add_check(checks, "市场 token", "fail", "missing")
+    else:
+        _add_check(checks, "市场 token", "pass", f"{len(token_ids)} 个")
+
+    if item.get("completed"):
+        blockers.append("赛程显示比赛已完结，禁止从赛程雷达下单")
+        _add_check(checks, "赛程状态", "fail", "已完结")
+    elif str(item.get("risk_level")) == "warning":
+        warnings.append(item.get("action") or "赛程匹配存在不确定性")
+        _add_check(checks, "赛程状态", "warn", status or "-")
+    else:
+        _add_check(checks, "赛程状态", "pass", status or "-")
+
+    if not item.get("espn_supported"):
+        warnings.append("该赛事不在 ESPN 核心覆盖范围内，需手动核对官方赛程和结算规则")
+    if yes_price <= 0 or yes_price >= 1:
+        warnings.append("YES 价格异常或缺失，买入前必须重扫盘口")
+    if amount <= 0:
+        blockers.append("下单金额必须大于 0")
+    elif amount > 50:
+        warnings.append("体育/电竞盘口跳动快，单笔金额偏大")
+
+    tips.extend([
+        "先确认比赛时间、队名、BO/盘口让分等规则和 Polymarket 标题完全一致",
+        "赛程雷达不是胜率模型，只负责帮你排查过期和错配风险",
+        "下单使用 FOK，小联赛/电竞尤其不要留 GTC 残单",
+    ])
+    return _finish(resp, f"赛程雷达：{league} / {status or '-'}，YES ${yes_price:.3f}，NO ${no_price:.3f}，金额 ${amount:.2f}。", "high")
+
+
 def _advice_smart_money(item: dict, amount: float, context: dict) -> dict:
     resp = _base_response("smart_money", item, amount)
     checks = resp["checks"]
@@ -556,6 +608,8 @@ def build_opportunity_advice(kind: str, item: dict, amount: float = 0, context: 
         return _advice_rewards(item, amount, context)
     if kind in ("news", "news_catalyst"):
         return _advice_news(item, amount, context)
+    if kind == "schedule":
+        return _advice_schedule(item, amount, context)
     if kind in ("smart", "smart_money"):
         return _advice_smart_money(item, amount, context)
 

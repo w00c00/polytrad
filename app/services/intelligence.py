@@ -418,6 +418,7 @@ async def scan_sports_schedule_radar(
     results = []
     for event in sports_events[:max_candidates]:
         title = event.get("title") or ""
+        trade_market = next((m for m in event.get("markets", []) if m.get("token_ids") and m.get("accepting_orders", True)), None)
         bucket, espn_supported = _schedule_bucket(title)
         if not espn_supported and not include_unsupported:
             continue
@@ -449,7 +450,7 @@ async def scan_sports_schedule_radar(
                 action = "更像冠军/奖项/长期盘，不按单场赛程过滤"
                 game_status = "长期盘"
             teams = ""
-        results.append({
+        row = {
             "event_slug": event.get("event_slug", ""),
             "title": title,
             "title_zh": event.get("title_zh") or translate_title(title),
@@ -468,7 +469,32 @@ async def scan_sports_schedule_radar(
             "start_time_bj": event.get("start_time_bj"),
             "volume_24h": event.get("volume_24h", 0.0),
             "markets": event.get("markets", []),
-        })
+        }
+        if trade_market:
+            row.update({
+                "market_slug": trade_market.get("slug", ""),
+                "slug": trade_market.get("slug", ""),
+                "condition_id": trade_market.get("condition_id", ""),
+                "question": trade_market.get("question") or title,
+                "question_zh": trade_market.get("question_zh") or translate_title(trade_market.get("question") or title),
+                "token_ids": trade_market.get("token_ids") or [],
+                "token_id": (trade_market.get("token_ids") or [""])[0],
+                "tick_size": trade_market.get("tick_size") or "0.01",
+                "neg_risk": bool(trade_market.get("neg_risk", False)),
+                "yes_price": _to_float(trade_market.get("yes_price"), 0.0),
+                "no_price": _to_float(trade_market.get("no_price"), 0.0),
+                "can_buy": not row.get("completed"),
+                "trade_disabled_reason": "比赛已完结，只观察不下单" if row.get("completed") else "",
+            })
+        else:
+            row.update({
+                "token_ids": [],
+                "yes_price": 0.0,
+                "no_price": 0.0,
+                "can_buy": False,
+                "trade_disabled_reason": "未找到可交易的子市场 token",
+            })
+        results.append(row)
 
     priority = {"danger": 0, "warning": 1, "success": 2, "info": 3}
     results.sort(key=lambda x: (priority.get(x["risk_level"], 9), x.get("game_time_bj") or "99-99 99:99", -x.get("volume_24h", 0)))

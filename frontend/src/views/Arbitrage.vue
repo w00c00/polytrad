@@ -383,11 +383,14 @@
                 </el-select>
                 <span style="margin-right:8px">小时</span>
                 <el-input-number v-model="newsParams.lookback_hours" :min="6" :max="168" size="small" style="width:100px;margin-right:8px" />
+                <el-select v-model="aiConfigId" placeholder="AI模型" size="small" style="width:130px;margin-right:8px">
+                  <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
+                </el-select>
                 <el-button size="small" type="primary" :loading="newsLoading" @click="loadNews">扫描</el-button>
               </div>
             </div>
           </template>
-          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="新闻雷达提示" description="列表按市场到期时间从近到远排列；新闻热度只代表有催化，不代表 YES 或 NO 哪边更便宜；快捷买入会走 AI 风控确认和 FOK。" />
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="新闻雷达提示" description="列表按市场到期时间从近到远排列；AI复核会真实调用所选模型判断新闻和规则相关性，快捷买入仍会走规则风控和 FOK。" />
           <el-table :data="newsResults" size="small" v-loading="newsLoading" max-height="560">
             <el-table-column label="市场" min-width="260" show-overflow-tooltip>
               <template #default="{ row }">
@@ -413,9 +416,9 @@
             </el-table-column>
             <el-table-column prop="latest_news_bj" label="最新新闻" width="100" />
             <el-table-column prop="end_date_bj" label="到期" width="110" />
-            <el-table-column label="操作" width="190" fixed="right">
+            <el-table-column label="操作" width="230" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" type="info" link @click="showAdvice(row, 'news', quickAmount)">AI</el-button>
+                <el-button size="small" type="info" link :loading="intelAiLoading === actionKey(row, 'news-ai')" @click="runIntelAiReview(row, 'news')">AI复核</el-button>
                 <el-button size="small" type="primary" link :loading="actionLoading === actionKey(row, 'news-yes')" @click="buyNews(row, 0, 'YES')">买YES</el-button>
                 <el-button size="small" type="primary" link :disabled="!row.token_ids?.[1]" :loading="actionLoading === actionKey(row, 'news-no')" @click="buyNews(row, 1, 'NO')">买NO</el-button>
               </template>
@@ -433,6 +436,9 @@
                 <span style="margin-right:8px">未来天数</span>
                 <el-input-number v-model="scheduleParams.days_ahead" :min="1" :max="30" size="small" style="width:100px;margin-right:8px" />
                 <el-switch v-model="scheduleParams.include_unsupported" size="small" active-text="显示小联赛/电竞" style="margin-right:8px" />
+                <el-select v-model="aiConfigId" placeholder="AI模型" size="small" style="width:130px;margin-right:8px">
+                  <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
+                </el-select>
                 <el-button size="small" type="primary" :loading="scheduleLoading" @click="loadSchedule">匹配</el-button>
               </div>
             </div>
@@ -455,7 +461,20 @@
                 <el-tag :type="riskTagType(row.risk_level)" size="small">{{ row.risk_level }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="action" label="处理建议" min-width="260" show-overflow-tooltip />
+            <el-table-column label="YES/NO" width="105">
+              <template #default="{ row }">
+                <span v-if="row.token_ids?.length">${{ Number(row.yes_price || 0).toFixed(3) }} / ${{ Number(row.no_price || 0).toFixed(3) }}</span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="action" label="处理建议" min-width="220" show-overflow-tooltip />
+            <el-table-column label="操作" width="235" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="info" link :loading="intelAiLoading === actionKey(row, 'schedule-ai')" @click="runIntelAiReview(row, 'schedule')">AI复核</el-button>
+                <el-button size="small" type="primary" link :disabled="!row.can_buy" :loading="actionLoading === actionKey(row, 'schedule-yes')" @click="buySchedule(row, 0, 'YES')">买YES</el-button>
+                <el-button size="small" type="primary" link :disabled="!row.can_buy || !row.token_ids?.[1]" :loading="actionLoading === actionKey(row, 'schedule-no')" @click="buySchedule(row, 1, 'NO')">买NO</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -476,6 +495,8 @@
                 <el-input-number v-model="smartParams.limit" :min="50" :max="5000" :step="500" size="small" style="width:120px;margin-right:8px" />
                 <span style="margin-right:8px">钱包</span>
                 <el-input-number v-model="smartParams.top_wallets" :min="3" :max="80" :step="5" size="small" style="width:100px;margin-right:8px" />
+                <span style="margin-right:8px">刷新秒</span>
+                <el-input-number v-model="smartAutoSeconds" :min="0" :max="600" :step="5" size="small" style="width:100px;margin-right:8px" />
                 <el-button size="small" type="primary" :loading="smartLoading" @click="loadSmartMoney">扫描</el-button>
               </div>
             </div>
@@ -655,11 +676,17 @@
 	        </el-table>
 	      </div>
 	    </el-dialog>
+
+	    <el-dialog v-model="intelAiVisible" title="真实 AI 复核" width="760">
+	      <div v-if="intelAiTitle" style="font-weight:600;margin-bottom:8px">{{ intelAiTitle }}</div>
+	      <el-alert type="info" show-icon :closable="false" style="margin-bottom:12px" title="模型复核" description="这里会真实调用你在系统里配置的 AI 模型；若结论为禁止/不建议下单，买入流程会被阻断。" />
+	      <pre class="ai-review">{{ intelAiResult || '等待 AI 返回...' }}</pre>
+	    </el-dialog>
 	  </div>
 	</template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { arbitrageApi, aiApi, opportunityApi } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -687,6 +714,10 @@ const cancelAllLoading = ref(false)
 const adviceVisible = ref(false)
 const advice = ref<any>(null)
 const adviceLoading = ref(false)
+const intelAiVisible = ref(false)
+const intelAiLoading = ref('')
+const intelAiTitle = ref('')
+const intelAiResult = ref('')
 
 const slippageLoading = ref(false)
 const slippageBatchLoading = ref(false)
@@ -727,6 +758,8 @@ const smartLoading = ref(false)
 const smartParams = ref({ lookback_hours: 72, limit: 2500, min_notional: 10, top_wallets: 30 })
 const smartReport = ref<any>(null)
 const smartWallets = ref<any[]>([])
+const smartAutoSeconds = ref(0)
+let smartAutoTimer: ReturnType<typeof setInterval> | null = null
 
 async function scan() {
   loading.value = true
@@ -853,6 +886,7 @@ function adviceAlertType(data: any) {
 function adviceKindFromAction(action: string) {
   if (action.startsWith('res-')) return 'resolution'
   if (action.startsWith('news-')) return 'news'
+  if (action.startsWith('schedule-')) return 'schedule'
   if (action.startsWith('smart')) return 'smart_money'
   if (action === 'slippage') return 'slippage'
   if (action === 'btc') return 'btc'
@@ -889,6 +923,107 @@ async function confirmWithAdvice(row: any, kind: string, amount: number, context
   await ElMessageBox.confirm(data.confirm_text, title, {
     type: data.risk_level === 'low' ? 'info' : 'warning',
     confirmButtonText: '确认执行',
+    cancelButtonText: '取消',
+  })
+  return true
+}
+
+function intelPrompt(kind: string, row: any, side = '') {
+  const common = {
+    kind,
+    side,
+    amount: quickAmount.value,
+    title: row.title_zh || row.question_zh || row.title || row.question,
+    yes_price: row.yes_price,
+    no_price: row.no_price,
+    end_date_bj: row.end_date_bj,
+    volume_24h: row.volume_24h,
+  }
+  const payload = kind === 'news'
+    ? {
+        ...common,
+        latest_headline: row.latest_headline_zh || row.latest_headline,
+        news_count: row.news_count,
+        signal_score: row.signal_score,
+        headlines: (row.headlines || []).slice(0, 5).map((h: any) => ({
+          title: h.title_zh || h.title,
+          source: h.source,
+          published_at_bj: h.published_at_bj,
+        })),
+      }
+    : {
+        ...common,
+        league: row.league || row.league_guess,
+        game: row.game || row.teams,
+        game_time_bj: row.game_time_bj,
+        game_status: row.game_status,
+        espn_supported: row.espn_supported,
+        action_note: row.action,
+        markets: (row.markets || []).slice(0, 4).map((m: any) => ({
+          question: m.question_zh || m.question,
+          yes_price: m.yes_price,
+          no_price: m.no_price,
+          end_date_bj: m.end_date_bj,
+        })),
+      }
+
+  return `请对下面这个 Polymarket ${kind === 'news' ? '新闻催化' : '赛程'}机会做下单前复核。
+
+要求：
+1. 第一行必须写：结论：通过 / 谨慎 / 禁止
+2. 判断新闻或赛程是否和市场结算规则直接相关。
+3. 给出 YES/NO 概率估计、当前价格是否有边际、是否建议买入 ${side || 'YES/NO'}。
+4. 如果信息不足、标题不匹配、赛程疑似不覆盖、比赛可能已结束，请明确写“禁止”或“不建议下单”。
+5. 用简体中文，短而直接。
+
+数据：
+${JSON.stringify(payload, null, 2)}`
+}
+
+function aiReviewBlocks(text: string) {
+  return /结论[:：]\s*禁止|禁止下单|不要下单|不建议下单|不建议买入|不建议买/.test(text || '')
+}
+
+async function fetchIntelAiReview(row: any, kind: 'news' | 'schedule', side = '') {
+  if (!aiConfigId.value) {
+    ElMessage.warning('请先选择 AI 模型')
+    return ''
+  }
+  const key = actionKey(row, `${kind}-ai`)
+  intelAiLoading.value = key
+  intelAiTitle.value = row.title_zh || row.question_zh || row.title || row.question || 'AI 复核'
+  intelAiResult.value = ''
+  try {
+    const { data } = await aiApi.analyze({
+      ai_config_id: aiConfigId.value,
+      system_prompt: '你是 Polymarket 交易前风控员，任务是保守把关，资金安全第一。必须用简体中文回答。',
+      prompt: intelPrompt(kind, row, side),
+    })
+    intelAiResult.value = data.result || ''
+    intelAiVisible.value = true
+    return intelAiResult.value
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
+    return ''
+  } finally {
+    intelAiLoading.value = ''
+  }
+}
+
+async function runIntelAiReview(row: any, kind: 'news' | 'schedule') {
+  await fetchIntelAiReview(row, kind)
+}
+
+async function confirmIntelAi(row: any, kind: 'news' | 'schedule', side: string) {
+  const result = await fetchIntelAiReview(row, kind, side)
+  if (!result) return false
+  if (aiReviewBlocks(result)) {
+    await ElMessageBox.alert(result, 'AI 复核阻断', { type: 'error', confirmButtonText: '知道了' })
+    return false
+  }
+  await ElMessageBox.confirm(`AI 复核未阻断。\n\n${result.slice(0, 700)}\n\n仍要继续提交 ${side} FOK 买入吗？`, '确认 AI 复核结果', {
+    type: 'warning',
+    confirmButtonText: '继续提交',
     cancelButtonText: '取消',
   })
   return true
@@ -1103,7 +1238,8 @@ function buyBtcAlert(row: any) {
   })
 }
 
-function buyNews(row: any, idx: number, label: string) {
+async function buyNews(row: any, idx: number, label: string) {
+  if (!await confirmIntelAi(row, 'news', label)) return
   return quickBuy(row, quickAmount.value, `news-${label.toLowerCase()}`, {
     token_id: row.token_ids?.[idx],
     market_slug: row.slug || '',
@@ -1111,6 +1247,22 @@ function buyNews(row: any, idx: number, label: string) {
     tick_size: row.tick_size || '0.01',
     neg_risk: row.neg_risk || false,
     advice_kind: 'news',
+  })
+}
+
+async function buySchedule(row: any, idx: number, label: string) {
+  if (!row.can_buy) {
+    ElMessage.warning(row.trade_disabled_reason || '该赛程市场当前不可下单')
+    return
+  }
+  if (!await confirmIntelAi(row, 'schedule', label)) return
+  return quickBuy(row, quickAmount.value, `schedule-${label.toLowerCase()}`, {
+    token_id: row.token_ids?.[idx],
+    market_slug: row.market_slug || row.slug || '',
+    condition_id: row.condition_id || '',
+    tick_size: row.tick_size || '0.01',
+    neg_risk: row.neg_risk || false,
+    advice_kind: 'schedule',
   })
 }
 
@@ -1320,6 +1472,7 @@ async function loadSchedule() {
 }
 
 async function loadSmartMoney() {
+  if (smartLoading.value) return
   smartLoading.value = true
   try {
     const { data } = await opportunityApi.smartMoney(smartParams.value)
@@ -1327,6 +1480,19 @@ async function loadSmartMoney() {
     smartWallets.value = data?.wallets || []
     if (smartWallets.value.length === 0) ElMessage.info('暂无满足条件的聪明钱钱包')
   } finally { smartLoading.value = false }
+}
+
+function resetSmartAutoRefresh() {
+  if (smartAutoTimer) {
+    clearInterval(smartAutoTimer)
+    smartAutoTimer = null
+  }
+  const seconds = Number(smartAutoSeconds.value || 0)
+  if (activeTab.value === 'smart' && seconds >= 5) {
+    smartAutoTimer = setInterval(() => {
+      loadSmartMoney()
+    }, seconds * 1000)
+  }
 }
 
 function riskTagType(level: string) {
@@ -1345,8 +1511,14 @@ watch(precheckBudget, () => {
   basketCheckBudget.value = null
 })
 
+watch([smartAutoSeconds, activeTab], resetSmartAutoRefresh)
+
 onMounted(() => {
   aiApi.providers().then(({ data }) => { aiProviders.value = data }).catch(() => {})
+})
+
+onUnmounted(() => {
+  if (smartAutoTimer) clearInterval(smartAutoTimer)
 })
 </script>
 
@@ -1373,5 +1545,18 @@ onMounted(() => {
 
 .advice-title.danger {
   color: #c45656;
+}
+
+.ai-review {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.7;
+  background: #f7f8fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 520px;
+  overflow: auto;
 }
 </style>
