@@ -542,6 +542,12 @@ def _advice_smart_money(item: dict, amount: float, context: dict) -> dict:
     closed_pnl = _num(item.get("closed_pnl"))
     token_id = trade.get("token_id") or item.get("token_id")
     side = str(trade.get("side") or "").upper()
+    category = str(context.get("category") or item.get("category") or "").lower()
+    weather_mode = category == "weather"
+    trade_price = _num(trade.get("price") or item.get("price"))
+    weather_closed_count = _num(item.get("weather_closed_count") or item.get("closed_count"))
+    weather_win_rate = item.get("weather_closed_win_rate") if item.get("weather_closed_win_rate") is not None else closed_win_rate
+    weather_pnl = _num(item.get("weather_closed_pnl") if item.get("weather_closed_pnl") is not None else closed_pnl)
 
     resp["metrics"].update({
         "amount": amount,
@@ -550,7 +556,14 @@ def _advice_smart_money(item: dict, amount: float, context: dict) -> dict:
         "closed_win_rate": closed_win_rate,
         "closed_pnl": closed_pnl,
         "side": side,
+        "price": trade_price,
     })
+    if weather_mode:
+        resp["metrics"].update({
+            "weather_closed_count": weather_closed_count,
+            "weather_win_rate": weather_win_rate,
+            "weather_pnl": weather_pnl,
+        })
 
     if not token_id:
         blockers.append("没有可跟买的 BUY token")
@@ -575,17 +588,45 @@ def _advice_smart_money(item: dict, amount: float, context: dict) -> dict:
         warnings.append(f"公开已平仓 PnL 为 ${closed_pnl:.2f}，不要盲跟")
     if item.get("copy_trade_promo"):
         warnings.append("该账号简介疑似跟单/推广，可能不是原始聪明钱")
+    if weather_mode:
+        min_weather_closed = _num(context.get("min_weather_closed") or 2)
+        min_weather_win_rate = _num(context.get("min_weather_win_rate") or 55)
+        if weather_closed_count < min_weather_closed:
+            warnings.append(f"天气已平仓样本只有 {weather_closed_count:.0f} 笔，统计显著性不足")
+        if weather_win_rate is None:
+            warnings.append("没有可用的天气已平仓胜率，不能当成天气高手")
+        elif float(weather_win_rate) < min_weather_win_rate:
+            warnings.append(f"天气胜率 {float(weather_win_rate):.1f}% 低于设定门槛 {min_weather_win_rate:.1f}%")
+        if weather_pnl < 0:
+            warnings.append(f"天气已平仓 PnL 为 ${weather_pnl:.2f}，不要盲跟")
+        if trade_price >= 0.95:
+            warnings.append("最近天气 BUY 价格接近 1，可能已临近结算或几乎被定价，毛利空间很薄")
+        if trade_price <= 0.05 and trade_price > 0:
+            warnings.append("最近天气 BUY 价格极低，可能是长尾或数据源不确定，不要把小概率当便宜")
 
     if amount <= 0:
         blockers.append("下单金额必须大于 0")
-    elif amount > 50:
-        warnings.append("跟单信息有滞后，建议降低金额或只观察")
+    elif amount > (25 if weather_mode else 50):
+        warnings.append("天气跟单数据和盘口变化有滞后，建议降低金额或只观察" if weather_mode else "跟单信息有滞后，建议降低金额或只观察")
 
     tips.extend([
         "聪明钱可能是在对冲、做市或分批出入，不等于方向判断",
         "只跟最近 BUY 交易的小额 FOK，不追 SELL 或未知方向",
         "成交后继续观察该钱包是否反向卖出",
     ])
+    if weather_mode:
+        tips.extend([
+            "跟买前核对市场使用的官方天气站、日期、时区和温度单位",
+            "天气盘临近结算时价格会跳得很快，优先小额 FOK，不留 GTC 残单",
+        ])
+    if weather_mode:
+        summary = (
+            f"天气跟单：天气历史 {weather_closed_count:.0f} 笔，"
+            f"胜率 {float(weather_win_rate):.1f}%"
+            if weather_win_rate is not None
+            else f"天气跟单：天气历史 {weather_closed_count:.0f} 笔，胜率未知"
+        )
+        return _finish(resp, f"{summary}，最近成交价 ${trade_price:.3f}，本次跟买 ${amount:.2f}。", "high")
     return _finish(resp, f"聪明钱：近段成交 ${total_notional:.2f}，评分 {smart_score:.1f}，本次跟买 ${amount:.2f}。", "high")
 
 

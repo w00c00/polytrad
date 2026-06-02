@@ -29,6 +29,37 @@ from app.services.scanner import (
 _INTEL_CACHE: dict[str, tuple[float, object]] = {}
 _CACHE_TTL_SECONDS = 180
 BJT = timezone(timedelta(hours=8))
+_WEATHER_PHRASES = (
+    "weather",
+    "temperature",
+    "highest temperature",
+    "lowest temperature",
+    "record high",
+    "record low",
+    "precipitation",
+    "rainfall",
+    "snowfall",
+    "hurricane",
+    "tropical storm",
+    "air quality",
+    "heat wave",
+    "cold snap",
+    "wind speed",
+)
+_WEATHER_WORDS = {
+    "rain",
+    "snow",
+    "hail",
+    "storm",
+    "tornado",
+    "flood",
+    "flooding",
+    "drought",
+    "wildfire",
+    "aqi",
+    "celsius",
+    "fahrenheit",
+}
 
 
 def _cache_get(key: str):
@@ -67,6 +98,38 @@ def _normalise_text(text: str) -> str:
     text = html.unescape(text or "").lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_weather_text(text: str) -> bool:
+    normalised = _normalise_text(text)
+    if not normalised:
+        return False
+    if any(phrase in normalised for phrase in _WEATHER_PHRASES):
+        return True
+    tokens = set(normalised.split())
+    if tokens & _WEATHER_WORDS:
+        return True
+    return bool(re.search(r"\b\d+\s?[cf]\b", normalised))
+
+
+def _market_text(item: dict) -> str:
+    return " ".join(
+        str(item.get(key) or "")
+        for key in (
+            "title",
+            "question",
+            "marketTitle",
+            "slug",
+            "eventSlug",
+            "event_slug",
+            "outcome",
+            "description",
+        )
+    )
+
+
+def _is_weather_market(item: dict) -> bool:
+    return _is_weather_text(_market_text(item))
 
 
 _QUERY_STOPWORDS = {
@@ -532,11 +595,12 @@ async def _recent_trade_pages(total_limit: int) -> list[dict]:
     return trades
 
 
-def _closed_position_stats(items: list[dict]) -> dict:
+def _closed_position_stats(items: list[dict], market_filter=None) -> dict:
     total = 0.0
     wins = 0
     counted = 0
-    for item in items[:200]:
+    filtered = [item for item in items if not market_filter or market_filter(item)]
+    for item in filtered[:200]:
         pnl = None
         for key in ("cashPnl", "realizedPnl", "pnl", "profit"):
             if item.get(key) is not None:
@@ -555,12 +619,23 @@ def _closed_position_stats(items: list[dict]) -> dict:
     }
 
 
-async def _wallet_closed_stats(wallet: str) -> dict:
+async def _wallet_closed_stats(wallet: str, market_filter=None) -> dict:
     try:
         closed = await data_api.get_closed_positions(wallet)
     except Exception:
         return {"closed_count": 0, "closed_pnl": 0.0, "closed_win_rate": None}
-    return _closed_position_stats(closed)
+    return _closed_position_stats(closed, market_filter)
+
+
+async def _wallet_closed_stats_bundle(wallet: str, market_filter=None) -> tuple[dict, dict | None]:
+    try:
+        closed = await data_api.get_closed_positions(wallet)
+    except Exception:
+        empty = {"closed_count": 0, "closed_pnl": 0.0, "closed_win_rate": None}
+        return empty, empty if market_filter else None
+    overall = _closed_position_stats(closed)
+    filtered = _closed_position_stats(closed, market_filter) if market_filter else None
+    return overall, filtered
 
 
 async def scan_smart_money(
@@ -569,11 +644,59 @@ async def scan_smart_money(
     min_notional: float = 50,
     top_wallets: int = 15,
 ) -> dict:
+    return await _scan_smart_money(
+        lookback_hours=lookback_hours,
+        limit=limit,
+        min_notional=min_notional,
+        top_wallets=top_wallets,
+        category="all",
+    )
+
+
+async def scan_weather_smart_money(
+    lookback_hours: int = 72,
+    limit: int = 5000,
+    min_notional: float = 5,
+    top_wallets: int = 30,
+    min_weather_win_rate: float = 55,
+    min_weather_closed: int = 2,
+    qualified_only: bool = True,
+) -> dict:
+    return await _scan_smart_money(
+        lookback_hours=lookback_hours,
+        limit=limit,
+        min_notional=min_notional,
+        top_wallets=top_wallets,
+        category="weather",
+        market_filter=_is_weather_market,
+        min_filtered_win_rate=min_weather_win_rate,
+        min_filtered_closed=min_weather_closed,
+        qualified_only=qualified_only,
+    )
+
+
+async def _scan_smart_money(
+    *,
+    lookback_hours: int = 24,
+    limit: int = 500,
+    min_notional: float = 50,
+    top_wallets: int = 15,
+    category: str = "all",
+    market_filter=None,
+    min_filtered_win_rate: float = 0,
+    min_filtered_closed: int = 0,
+    qualified_only: bool = False,
+) -> dict:
     lookback_hours = min(max(int(lookback_hours or 24), 1), 168)
     limit = min(max(int(limit or 500), 50), 5000)
     min_notional = min(max(float(min_notional or 50), 1.0), 100000.0)
     top_wallets = min(max(int(top_wallets or 15), 3), 80)
-    cache_key = f"smart:{lookback_hours}:{limit}:{min_notional}:{top_wallets}"
+    min_filtered_win_rate = min(max(float(min_filtered_win_rate or 0), 0.0), 100.0)
+    min_filtered_closed = min(max(int(min_filtered_closed or 0), 0), 200)
+    cache_key = (
+        f"smart:{category}:{lookback_hours}:{limit}:{min_notional}:{top_wallets}:"
+        f"{min_filtered_win_rate}:{min_filtered_closed}:{int(bool(qualified_only))}"
+    )
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -590,6 +713,8 @@ async def scan_smart_money(
         dt = _timestamp_dt(trade.get("timestamp"))
         if dt and dt < cutoff:
             continue
+        if market_filter and not market_filter(trade):
+            continue
         price = _to_float(trade.get("price"), 0.0)
         size = _to_float(trade.get("size"), 0.0)
         notional = abs(price * size)
@@ -598,6 +723,7 @@ async def scan_smart_money(
         title = trade.get("title") or ""
         slim = {
             "wallet": wallet,
+            "category": category,
             "side": trade.get("side") or "",
             "token_id": trade.get("asset") or "",
             "condition_id": trade.get("conditionId") or "",
@@ -644,13 +770,15 @@ async def scan_smart_money(
 
     candidates = [g for g in groups.values() if g["total_notional"] >= min_notional]
     candidates.sort(key=lambda x: (x["total_notional"], x["trades_count"]), reverse=True)
-    candidates = candidates[:top_wallets]
+    candidate_limit = top_wallets if not market_filter else min(max(top_wallets * 4, top_wallets), 80)
+    candidates = candidates[:candidate_limit]
 
     sem = asyncio.Semaphore(5)
 
     async def attach_stats(group: dict) -> dict:
         async with sem:
-            stats = await _wallet_closed_stats(group["wallet"])
+            overall_stats, filtered_stats = await _wallet_closed_stats_bundle(group["wallet"], market_filter)
+        stats = filtered_stats or overall_stats
         recent = sorted(group["recent_trades"], key=lambda t: float(t.get("timestamp") or 0), reverse=True)[:8]
         copy_promo = bool(re.search(r"\b(copy|mirror|ref|follow me)\b", f"{group.get('name','')} {group.get('bio','')}", re.IGNORECASE))
         score = group["total_notional"] / 100 + group["trades_count"] * 2
@@ -658,7 +786,15 @@ async def scan_smart_money(
             score += max(stats["closed_win_rate"] - 50, 0) / 2
         if stats.get("closed_pnl", 0) > 0:
             score += min(stats["closed_pnl"] / 50, 20)
+        qualified = True
+        if market_filter:
+            qualified = (
+                stats.get("closed_win_rate") is not None
+                and stats.get("closed_count", 0) >= min_filtered_closed
+                and stats.get("closed_win_rate", 0) >= min_filtered_win_rate
+            )
         group.update({
+            "category": category,
             "total_notional": round(group["total_notional"], 2),
             "buy_notional": round(group["buy_notional"], 2),
             "sell_notional": round(group["sell_notional"], 2),
@@ -669,19 +805,51 @@ async def scan_smart_money(
             "copy_trade_promo": copy_promo,
             "smart_score": round(score, 1),
             "risk_note": "疑似跟单/推广账号，先观察其历史胜率和仓位变化" if copy_promo else "聪明钱只代表资金流，不代表必赢；注意可能是对冲、做市或信息滞后。",
+            "all_closed_count": overall_stats.get("closed_count", 0),
+            "all_closed_pnl": overall_stats.get("closed_pnl", 0.0),
+            "all_closed_win_rate": overall_stats.get("closed_win_rate"),
             **stats,
         })
+        if category == "weather":
+            group.update({
+                "weather_closed_count": stats.get("closed_count", 0),
+                "weather_closed_pnl": stats.get("closed_pnl", 0.0),
+                "weather_closed_win_rate": stats.get("closed_win_rate"),
+                "weather_qualified": qualified,
+                "weather_threshold_note": (
+                    f"天气历史 {stats.get('closed_count', 0)} 笔 / 胜率 "
+                    f"{stats.get('closed_win_rate') if stats.get('closed_win_rate') is not None else '-'}%，"
+                    f"门槛 {min_filtered_closed} 笔 / {min_filtered_win_rate:.1f}%"
+                ),
+                "risk_note": (
+                    "天气高胜率只代表历史已平仓表现；温度盘临近结算、数据源和盘口跳变都可能造成跟单失效。"
+                    if qualified
+                    else "未达到天气高胜率门槛，只建议观察，不建议一键跟单。"
+                ),
+            })
         return group
 
     wallets = await asyncio.gather(*(attach_stats(g) for g in candidates))
+    if market_filter and qualified_only:
+        wallets = [w for w in wallets if w.get("weather_qualified")]
     wallets.sort(key=lambda x: x.get("smart_score", 0), reverse=True)
     large_trades.sort(key=lambda x: (x.get("notional", 0), float(x.get("timestamp") or 0)), reverse=True)
     result = {
         "generated_at_bj": datetime.now(BJT).strftime("%m-%d %H:%M"),
+        "category": category,
         "lookback_hours": lookback_hours,
         "sampled_trades": len(trades),
+        "matched_trades": sum(w.get("trades_count", 0) for w in wallets),
+        "qualified_only": qualified_only,
+        "min_filtered_win_rate": min_filtered_win_rate,
+        "min_filtered_closed": min_filtered_closed,
         "wallets": wallets,
         "large_trades": large_trades[:50],
-        "note": "该面板基于 Polymarket 公开成交流和公开已平仓数据估算，只能用于观察，不能替代独立判断。",
+        "note": (
+            "天气跟单只扫描温度、降雨、风暴等天气类公开成交，并优先按天气已平仓胜率排序；"
+            "天气盘常临近结算，跟买前必须核对官方数据源、结算时间和盘口深度。"
+            if category == "weather"
+            else "该面板基于 Polymarket 公开成交流和公开已平仓数据估算，只能用于观察，不能替代独立判断。"
+        ),
     }
     return _cache_set(cache_key, result)

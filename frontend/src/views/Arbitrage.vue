@@ -552,6 +552,81 @@
           </el-table>
         </el-card>
       </el-tab-pane>
+
+      <el-tab-pane label="天气跟单" name="weather-smart">
+        <el-card>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>天气类聪明钱</span>
+              <div>
+                <span style="margin-right:8px">跟买金额</span>
+                <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
+                <span style="margin-right:8px">小时</span>
+                <el-input-number v-model="weatherSmartParams.lookback_hours" :min="1" :max="168" size="small" style="width:90px;margin-right:8px" />
+                <span style="margin-right:8px">天气胜率</span>
+                <el-input-number v-model="weatherSmartParams.min_weather_win_rate" :min="0" :max="100" :step="5" size="small" style="width:95px;margin-right:8px" />
+                <span style="margin-right:8px">样本</span>
+                <el-input-number v-model="weatherSmartParams.min_weather_closed" :min="0" :max="200" size="small" style="width:85px;margin-right:8px" />
+                <el-switch v-model="weatherSmartParams.qualified_only" size="small" active-text="只看达标" style="margin-right:8px" />
+                <el-button size="small" type="primary" :loading="weatherSmartLoading" @click="loadWeatherSmartMoney">扫描</el-button>
+              </div>
+            </div>
+          </template>
+          <el-alert type="warning" show-icon :closable="false" style="margin-bottom:12px" title="天气跟单提示" :description="weatherSmartReport?.note || '只扫描温度、降雨、风暴等天气类公开成交；天气胜率来自公开已平仓天气盘，仍可能受样本和数据源影响。'" />
+          <el-table :data="weatherSmartWallets" size="small" v-loading="weatherSmartLoading" max-height="560">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <el-table :data="row.recent_trades || []" size="small">
+                  <el-table-column prop="timestamp_bj" label="时间" width="95" />
+                  <el-table-column prop="side" label="方向" width="70" />
+                  <el-table-column label="天气市场" show-overflow-tooltip>
+                    <template #default="{ row: trade }">{{ trade.title_zh || trade.title }}</template>
+                  </el-table-column>
+                  <el-table-column prop="outcome" label="结果" width="90" />
+                  <el-table-column label="金额" width="90">
+                    <template #default="{ row: trade }">${{ Number(trade.notional || 0).toFixed(2) }}</template>
+                  </el-table-column>
+                  <el-table-column label="价格" width="80">
+                    <template #default="{ row: trade }">${{ Number(trade.price || 0).toFixed(3) }}</template>
+                  </el-table-column>
+                </el-table>
+              </template>
+            </el-table-column>
+            <el-table-column label="钱包" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div>{{ row.pseudonym || row.name || row.wallet }}</div>
+                <div style="font-size:12px;color:#909399">{{ row.wallet }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="天气评分" width="90">
+              <template #default="{ row }">{{ Number(row.smart_score || 0).toFixed(1) }}</template>
+            </el-table-column>
+            <el-table-column label="天气胜率" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.weather_qualified ? 'success' : 'warning'" size="small">
+                  {{ row.weather_closed_win_rate == null ? '-' : `${Number(row.weather_closed_win_rate).toFixed(1)}%` }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="weather_closed_count" label="天气样本" width="90" />
+            <el-table-column label="天气PnL" width="95">
+              <template #default="{ row }">${{ Number(row.weather_closed_pnl || 0).toFixed(0) }}</template>
+            </el-table-column>
+            <el-table-column label="近段天气成交" width="115">
+              <template #default="{ row }">${{ Number(row.total_notional || 0).toFixed(0) }}</template>
+            </el-table-column>
+            <el-table-column label="最新天气BUY" min-width="240" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.last_buy_trade?.title_zh || row.last_buy_trade?.title || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="170" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="info" link @click="showAdvice(smartAdviceItem(row), 'smart_money', quickAmount, weatherAdviceContext(row))">AI</el-button>
+                <el-button size="small" type="primary" :disabled="!row.weather_qualified || !row.last_buy_trade" :loading="actionLoading === actionKey(row, 'weather-smart-follow')" @click="followSmartMoney(row, 'weather')">跟买天气BUY</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog v-model="showHelp" title="套利说明" width="650">
@@ -760,6 +835,19 @@ const smartReport = ref<any>(null)
 const smartWallets = ref<any[]>([])
 const smartAutoSeconds = ref(0)
 let smartAutoTimer: ReturnType<typeof setInterval> | null = null
+
+const weatherSmartLoading = ref(false)
+const weatherSmartParams = ref({
+  lookback_hours: 72,
+  limit: 5000,
+  min_notional: 5,
+  top_wallets: 30,
+  min_weather_win_rate: 55,
+  min_weather_closed: 2,
+  qualified_only: true,
+})
+const weatherSmartReport = ref<any>(null)
+const weatherSmartWallets = ref<any[]>([])
 
 async function scan() {
   loading.value = true
@@ -1266,19 +1354,51 @@ async function buySchedule(row: any, idx: number, label: string) {
   })
 }
 
-async function followSmartMoney(row: any) {
+function smartAdviceItem(row: any) {
+  const trade = row.last_buy_trade || row
+  return {
+    ...trade,
+    category: row.category,
+    wallet: row.wallet,
+    smart_score: row.smart_score,
+    total_notional: row.total_notional,
+    buy_notional: row.buy_notional,
+    sell_notional: row.sell_notional,
+    closed_count: row.closed_count,
+    closed_pnl: row.closed_pnl,
+    closed_win_rate: row.closed_win_rate,
+    weather_closed_count: row.weather_closed_count,
+    weather_closed_pnl: row.weather_closed_pnl,
+    weather_closed_win_rate: row.weather_closed_win_rate,
+    weather_qualified: row.weather_qualified,
+    copy_trade_promo: row.copy_trade_promo,
+  }
+}
+
+function weatherAdviceContext(row: any) {
+  return {
+    wallet: row.wallet,
+    category: 'weather',
+    min_weather_win_rate: weatherSmartParams.value.min_weather_win_rate,
+    min_weather_closed: weatherSmartParams.value.min_weather_closed,
+  }
+}
+
+async function followSmartMoney(row: any, category = 'smart') {
   const trade = row.last_buy_trade
   if (!trade?.token_id) {
     ElMessage.warning('没有可跟买的最近 BUY token')
     return
   }
-  return quickBuy(trade, quickAmount.value, 'smart-follow', {
+  const adviceItem = smartAdviceItem(row)
+  const key = category === 'weather' ? 'weather-smart-follow' : 'smart-follow'
+  return quickBuy(adviceItem, quickAmount.value, key, {
     token_id: trade.token_id,
     market_slug: trade.market_slug || '',
     condition_id: trade.condition_id || '',
     tick_size: '0.01',
     advice_kind: 'smart_money',
-    advice_context: { wallet: row.wallet },
+    advice_context: category === 'weather' ? weatherAdviceContext(row) : { wallet: row.wallet },
   })
 }
 
@@ -1480,6 +1600,17 @@ async function loadSmartMoney() {
     smartWallets.value = data?.wallets || []
     if (smartWallets.value.length === 0) ElMessage.info('暂无满足条件的聪明钱钱包')
   } finally { smartLoading.value = false }
+}
+
+async function loadWeatherSmartMoney() {
+  if (weatherSmartLoading.value) return
+  weatherSmartLoading.value = true
+  try {
+    const { data } = await opportunityApi.weatherSmartMoney(weatherSmartParams.value)
+    weatherSmartReport.value = data
+    weatherSmartWallets.value = data?.wallets || []
+    if (weatherSmartWallets.value.length === 0) ElMessage.info('暂无达到门槛的天气聪明钱，可降低胜率/样本门槛重扫')
+  } finally { weatherSmartLoading.value = false }
 }
 
 function resetSmartAutoRefresh() {

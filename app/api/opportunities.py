@@ -6,7 +6,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
 from app.services.opportunity_advisor import build_opportunity_advice
-from app.services.intelligence import scan_news_catalysts, scan_smart_money, scan_sports_schedule_radar
+from app.services.intelligence import scan_news_catalysts, scan_smart_money, scan_sports_schedule_radar, scan_weather_smart_money
 from app.services.notification import notify_user
 from app.services.opportunities import (
     basket_precheck,
@@ -170,6 +170,28 @@ async def smart_money(
     user: User = Depends(get_current_user),
 ):
     return await scan_smart_money(lookback_hours, limit, min_notional, top_wallets)
+
+
+@router.get("/weather-smart-money")
+async def weather_smart_money(
+    lookback_hours: int = Query(72, ge=1, le=168),
+    limit: int = Query(5000, ge=50, le=5000),
+    min_notional: float = Query(5, ge=1, le=100000),
+    top_wallets: int = Query(30, ge=3, le=80),
+    min_weather_win_rate: float = Query(55, ge=0, le=100),
+    min_weather_closed: int = Query(2, ge=0, le=200),
+    qualified_only: bool = Query(True),
+    user: User = Depends(get_current_user),
+):
+    return await scan_weather_smart_money(
+        lookback_hours,
+        limit,
+        min_notional,
+        top_wallets,
+        min_weather_win_rate,
+        min_weather_closed,
+        qualified_only,
+    )
 
 
 @router.get("/basket-precheck")

@@ -115,6 +115,7 @@ export const opportunityApi = {
   newsCatalysts: (params?: any) => api.get('/opportunities/news-catalysts', { params }),
   sportsSchedule: (params?: any) => api.get('/opportunities/sports-schedule', { params }),
   smartMoney: (params?: any) => api.get('/opportunities/smart-money', { params }),
+  weatherSmartMoney: (params?: any) => api.get('/opportunities/weather-smart-money', { params }),
   basketPrecheck: (params: any) => api.get('/opportunities/basket-precheck', { params }),
   basketBuy: (data: any) => api.post('/opportunities/basket-buy', data),
   basketShadow: (data: any) => api.post('/opportunities/basket-shadow', data),

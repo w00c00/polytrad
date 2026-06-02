@@ -141,17 +141,18 @@
           </div>
         </template>
 
-        <template v-else-if="tab === 'smart'">
+        <template v-else-if="tab === 'smart' || tab === 'weatherSmart'">
           <div class="card-title">{{ item.pseudonym || item.name || item.wallet }}</div>
           <div class="card-info">
             <span>评分 {{ Number(item.smart_score || 0).toFixed(1) }}</span>
             <span>成交 ${{ Number(item.total_notional || 0).toFixed(0) }}</span>
-            <span>胜率 {{ item.closed_win_rate == null ? '-' : `${Number(item.closed_win_rate).toFixed(1)}%` }}</span>
+            <span>{{ tab === 'weatherSmart' ? '天气胜率' : '胜率' }} {{ item.closed_win_rate == null ? '-' : `${Number(item.closed_win_rate).toFixed(1)}%` }}</span>
+            <span v-if="tab === 'weatherSmart'">样本 {{ item.weather_closed_count || 0 }}</span>
           </div>
-          <div class="card-note">最新 BUY：{{ item.last_buy_trade?.title_zh || item.last_buy_trade?.title || '-' }}</div>
+          <div class="card-note">最新 {{ tab === 'weatherSmart' ? '天气' : '' }}BUY：{{ item.last_buy_trade?.title_zh || item.last_buy_trade?.title || '-' }}</div>
           <div class="card-note">{{ item.risk_note }}</div>
-          <button class="action-btn primary" :disabled="!item.last_buy_trade || busyKey === actionKey(item, 'smart-follow')" @click="followSmartMoney(item)">
-            {{ busyKey === actionKey(item, 'smart-follow') ? '提交中...' : '跟买最近BUY' }}
+          <button class="action-btn primary" :disabled="!item.last_buy_trade || (tab === 'weatherSmart' && !item.weather_qualified) || busyKey === actionKey(item, 'smart-follow')" @click="followSmartMoney(item)">
+            {{ busyKey === actionKey(item, 'smart-follow') ? '提交中...' : (tab === 'weatherSmart' ? '跟买天气BUY' : '跟买最近BUY') }}
           </button>
         </template>
       </div>
@@ -183,6 +184,7 @@ const tabs = [
   { key: 'news', label: '新闻' },
   { key: 'schedule', label: '赛程' },
   { key: 'smart', label: '聪明钱' },
+  { key: 'weatherSmart', label: '天气跟单' },
 ]
 
 const items = computed(() => dataMap.value[tab.value] || [])
@@ -192,6 +194,7 @@ const tradeBarLabel = computed(() => {
   if (tab.value === 'cross') return '双边预算'
   if (tab.value === 'schedule') return '赛程匹配'
   if (tab.value === 'smart') return '跟买金额'
+  if (tab.value === 'weatherSmart') return '天气跟买'
   return '买入金额'
 })
 
@@ -236,6 +239,17 @@ async function loadData() {
       data = resp.data || []
     } else if (tab.value === 'smart') {
       const resp = await opportunityApi.smartMoney({ lookback_hours: 72, limit: 2500, min_notional: 10, top_wallets: 24 })
+      data = resp.data?.wallets || []
+    } else if (tab.value === 'weatherSmart') {
+      const resp = await opportunityApi.weatherSmartMoney({
+        lookback_hours: 72,
+        limit: 5000,
+        min_notional: 5,
+        top_wallets: 24,
+        min_weather_win_rate: 55,
+        min_weather_closed: 2,
+        qualified_only: true,
+      })
       data = resp.data?.wallets || []
     }
     dataMap.value = { ...dataMap.value, [tab.value]: data }
@@ -510,13 +524,17 @@ function followSmartMoney(item: any) {
     ElMessage.warning('没有可跟买的最近 BUY token')
     return
   }
-  return quickBuy(trade, 'smart-follow', {
+  const adviceItem = { ...trade, ...item, last_buy_trade: trade }
+  const context = item.category === 'weather'
+    ? { wallet: item.wallet, category: 'weather', min_weather_win_rate: 55, min_weather_closed: 2 }
+    : { wallet: item.wallet }
+  return quickBuy(adviceItem, 'smart-follow', {
     token_id: trade.token_id,
     market_slug: trade.market_slug || '',
     condition_id: trade.condition_id || '',
     tick_size: '0.01',
     advice_kind: 'smart_money',
-    advice_context: { wallet: item.wallet },
+    advice_context: context,
   })
 }
 
