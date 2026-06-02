@@ -36,6 +36,7 @@
         </div>
         <div class="sheet-body">
           <div class="sheet-expiry">到期: {{ selectedMarket?.end_date_bj || selectedEvent?.end_date_bj || '-' }}</div>
+          <div class="sheet-price">YES ${{ Number(selectedMarket?.yes_price || 0).toFixed(3) }} / NO ${{ Number(selectedMarket?.no_price || 0).toFixed(3) }}</div>
           <div class="sheet-field">
             <label>方向</label>
             <div class="dir-btns">
@@ -47,6 +48,22 @@
             <label>金额 (USDC)</label>
             <input type="number" v-model.number="amount" min="1" class="sheet-input" />
           </div>
+          <div class="ai-panel">
+            <div class="ai-row">
+              <select v-model="aiConfigId" class="ai-select" :disabled="aiBusy">
+                <option :value="null">AI模型</option>
+                <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
+              <label class="ai-check">
+                <input v-model="aiBeforeOrder" type="checkbox" />
+                下单前AI
+              </label>
+            </div>
+            <button class="ai-btn" :disabled="aiBusy || !aiConfigId" @click="reviewOrderAi">
+              {{ aiBusy ? 'AI复核中...' : 'AI复核' }}
+            </button>
+            <div v-if="aiResult" class="ai-result" :class="{ danger: aiBlocked }">{{ aiResult }}</div>
+          </div>
           <button class="sheet-submit" :disabled="ordering" @click="placeOrder">
             {{ ordering ? '下单中...' : `买入 ${direction}` }}
           </button>
@@ -57,9 +74,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { sportsApi } from '../../api'
 import { ElMessage } from 'element-plus'
+import { useMobileAiReview } from './useMobileAiReview'
 
 const loading = ref(false)
 const events = ref<any[]>([])
@@ -70,6 +88,18 @@ const selectedMarket = ref<any>(null)
 const direction = ref('YES')
 const amount = ref(10)
 const ordering = ref(false)
+const {
+  providers,
+  aiConfigId,
+  aiBeforeOrder,
+  aiBusy,
+  aiResult,
+  aiBlocked,
+  loadAiProviders,
+  resetAiReview,
+  runAiReview,
+  confirmAiBeforeOrder,
+} = useMobileAiReview()
 
 const filtered = computed(() => {
   if (tab.value === 'games') return events.value.filter(e => e.is_game)
@@ -85,6 +115,33 @@ function selectEvent(e: any) {
 function buyMarket(m: any) {
   selectedMarket.value = m
   showSheet.value = true
+  resetAiReview()
+}
+
+function currentAiPayload() {
+  const m = selectedMarket.value || {}
+  const e = selectedEvent.value || {}
+  return {
+    kind: 'sports' as const,
+    side: direction.value,
+    amount: Number(amount.value || 0),
+    title: m.question_zh || m.question || e.title_zh || e.title || '体育市场',
+    question: m.question || e.title || '',
+    price: Number(direction.value === 'NO' ? m.no_price || 0 : m.yes_price || 0),
+    yes_price: Number(m.yes_price || 0),
+    no_price: Number(m.no_price || 0),
+    end_date_bj: m.end_date_bj || e.end_date_bj || '',
+    market_slug: m.slug || e.event_slug || '',
+    context: {
+      event_title: e.title_zh || e.title,
+      is_game: e.is_game,
+      volume_24h: e.volume_24h,
+    },
+  }
+}
+
+function reviewOrderAi() {
+  return runAiReview(currentAiPayload())
 }
 
 async function loadEvents() {
@@ -100,6 +157,7 @@ async function placeOrder() {
   if (!m?.token_ids?.length) { ElMessage.warning('缺少 token 信息'); return }
   const tokenId = direction.value === 'NO' ? m.token_ids[1] : m.token_ids[0]
   if (!tokenId) { ElMessage.warning('缺少对应方向 token'); return }
+  if (!await confirmAiBeforeOrder(currentAiPayload())) return
   ordering.value = true
   try {
     const { data } = await sportsApi.order({
@@ -119,7 +177,12 @@ async function placeOrder() {
   } finally { ordering.value = false }
 }
 
-onMounted(loadEvents)
+watch([direction, amount, selectedMarket], resetAiReview)
+
+onMounted(() => {
+  loadEvents()
+  loadAiProviders()
+})
 </script>
 
 <style scoped>
@@ -192,6 +255,7 @@ onMounted(loadEvents)
 .sheet-close { font-size: 20px; color: #909399; cursor: pointer; }
 .sheet-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 .sheet-expiry { font-size: 12px; color: #f56c6c; line-height: 1.4; }
+.sheet-price { font-size: 13px; color: #303133; font-weight: bold; }
 .sheet-field label { display: block; font-size: 13px; color: #606266; margin-bottom: 8px; }
 .dir-btns { display: flex; gap: 8px; }
 .dir-btn { flex: 1; padding: 12px; border: 2px solid #dcdfe6; border-radius: 8px; background: #fff; font-size: 14px; font-weight: bold; cursor: pointer; }
@@ -201,5 +265,13 @@ onMounted(loadEvents)
 .sheet-input:focus { border-color: #409eff; }
 .sheet-submit { width: 100%; padding: 14px; background: #409eff; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
 .sheet-submit:disabled { opacity: 0.6; }
+.ai-panel { display: flex; flex-direction: column; gap: 8px; }
+.ai-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.ai-select { width: 100%; height: 36px; border: 1px solid #dcdfe6; border-radius: 8px; background: #fff; padding: 0 8px; font-size: 13px; }
+.ai-check { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #606266; white-space: nowrap; }
+.ai-btn { height: 34px; border: 1px solid #409eff; color: #409eff; background: #ecf5ff; border-radius: 8px; font-size: 13px; font-weight: bold; }
+.ai-btn:disabled { opacity: 0.5; }
+.ai-result { max-height: 140px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; color: #303133; background: #f5f7fa; border-left: 3px solid #409eff; border-radius: 6px; padding: 8px 10px; }
+.ai-result.danger { border-left-color: #f56c6c; background: #fef0f0; }
 .empty-hint { text-align: center; color: #909399; padding: 40px 0; font-size: 14px; }
 </style>

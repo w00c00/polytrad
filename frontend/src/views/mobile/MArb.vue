@@ -12,7 +12,11 @@
     <div class="trade-bar">
       <span>{{ tradeBarLabel }}</span>
       <input v-if="tab !== 'schedule'" v-model.number="quickAmount" type="number" min="1" step="1" />
-      <input v-if="tab === 'smart'" v-model.number="smartAutoSeconds" type="number" min="0" step="5" placeholder="刷新秒" />
+      <input v-if="tab === 'smart' || tab === 'weatherSmart'" v-model.number="smartAutoSeconds" type="number" min="0" step="5" placeholder="刷新秒" />
+      <select v-if="tab === 'news' || tab === 'schedule'" v-model="aiConfigId" class="trade-select">
+        <option :value="null">AI模型</option>
+        <option v-for="p in aiProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+      </select>
       <button v-if="tab === 'rewards'" class="scan-btn danger" :disabled="busyKey === 'cancel-all'" @click="cancelAllOrders">全撤</button>
       <button class="scan-btn" @click="reload">重扫</button>
     </div>
@@ -33,9 +37,12 @@
           </div>
           <div class="card-note risk-time">到期 {{ item.end_date_bj || '-' }}</div>
           <div class="card-note">{{ item.execution_note }}</div>
-          <button class="action-btn primary" :disabled="!item.executable || item.direction !== 'BUY_YES' || busyKey === actionKey(item, 'basket')" @click="buyBasket(item)">
-            {{ busyKey === actionKey(item, 'basket') ? '提交中...' : '一键买入篮子' }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'basket-advice')" @click="reviewAdvice(item, 'basket', { min_profit_pct: 0.2 })">AI风控</button>
+            <button class="action-btn primary" :disabled="!item.executable || item.direction !== 'BUY_YES' || busyKey === actionKey(item, 'basket')" @click="buyBasket(item)">
+              {{ busyKey === actionKey(item, 'basket') ? '提交中...' : '一键买入篮子' }}
+            </button>
+          </div>
         </template>
 
         <template v-else-if="tab === 'slippage'">
@@ -47,9 +54,12 @@
             <span>兑付毛利 ${{ Number(item.depth.gross_profit_if_win || 0).toFixed(2) }}</span>
           </div>
           <div class="card-note">到期 {{ item.end_date_bj || '-' }}，兑付 ROI {{ Number(item.depth.gross_roi_if_win_pct || 0).toFixed(1) }}%，可买 {{ item.depth.shares.toFixed(2) }} 份，24h量 ${{ Math.round(item.volume_24h).toLocaleString() }}</div>
-          <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'slippage')" @click="buySlippage(item)">
-            {{ busyKey === actionKey(item, 'slippage') ? '提交中...' : '买入' }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'slippage-advice')" @click="reviewAdvice(item, 'slippage', { max_slippage_pct: 5 })">AI风控</button>
+            <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'slippage')" @click="buySlippage(item)">
+              {{ busyKey === actionKey(item, 'slippage') ? '提交中...' : '买入' }}
+            </button>
+          </div>
         </template>
 
         <template v-else-if="tab === 'cross'">
@@ -62,9 +72,12 @@
           <div class="card-note">{{ item.strategy_label || item.relation_type }}；买 YES: {{ item.buy_candidate?.question_zh }}，到期 {{ item.buy_candidate?.end_date_bj || '-' }}</div>
           <div class="card-note">对冲 NO: {{ item.sell_reference?.question_zh }}，到期 {{ item.sell_reference?.end_date_bj || '-' }}</div>
           <div class="card-note">最大可盈利盘口约 ${{ Number(item.pair_depth?.max_capacity_usdc || 0).toFixed(2) }}；按当前双边预算执行。</div>
-          <button class="action-btn primary" :disabled="!item.executable || busyKey === actionKey(item, 'cross-smart')" @click="buyCrossHedge(item)">
-            {{ busyKey === actionKey(item, 'cross-smart') ? '提交中...' : '智能双边套利' }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'cross-advice')" @click="reviewAdvice(item, 'cross', { min_profit_pct: 0.2 })">AI风控</button>
+            <button class="action-btn primary" :disabled="!item.executable || busyKey === actionKey(item, 'cross-smart')" @click="buyCrossHedge(item)">
+              {{ busyKey === actionKey(item, 'cross-smart') ? '提交中...' : '智能双边套利' }}
+            </button>
+          </div>
         </template>
 
         <template v-else-if="tab === 'rewards'">
@@ -74,9 +87,12 @@
             <span>{{ item.fit ? '达标' : '偏宽' }}</span>
           </div>
           <div class="card-note">到期 {{ item.end_date_bj || '-' }}，奖励要求 {{ item.rewards_min_size }}份 / {{ (item.rewards_max_spread * 100).toFixed(2) }}%</div>
-          <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'maker')" @click="quoteMaker(item)">
-            {{ busyKey === actionKey(item, 'maker') ? '提交中...' : '挂双边做市' }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'rewards-advice')" @click="reviewAdvice(item, 'rewards')">AI风控</button>
+            <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'maker')" @click="quoteMaker(item)">
+              {{ busyKey === actionKey(item, 'maker') ? '提交中...' : '挂双边做市' }}
+            </button>
+          </div>
         </template>
 
         <template v-else-if="tab === 'resolution'">
@@ -89,6 +105,7 @@
           </div>
           <div class="card-note">结束 {{ item.end_date_bj || '-' }}</div>
           <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'resolution-advice')" @click="reviewAdvice(item, 'resolution')">AI</button>
             <button class="action-btn primary" :disabled="!item.can_buy || busyKey === actionKey(item, 'res-yes')" @click="buyOutcome(item, 0, 'YES')">买YES</button>
             <button class="action-btn primary" :disabled="!item.can_buy || !item.token_ids?.[1] || busyKey === actionKey(item, 'res-no')" @click="buyOutcome(item, 1, 'NO')">买NO</button>
           </div>
@@ -102,9 +119,12 @@
             <span>Edge {{ (item.edge * 100).toFixed(1) }}%</span>
           </div>
           <div class="card-note">UP 概率 {{ (item.signal.prob_up * 100).toFixed(1) }}%，截止 {{ item.end_time_bj || '-' }}</div>
-          <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'btc')" @click="buyBtcAlert(item)">
-            {{ busyKey === actionKey(item, 'btc') ? '提交中...' : '买入' }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'btc-advice')" @click="reviewAdvice(item, 'btc')">AI风控</button>
+            <button class="action-btn primary" :disabled="busyKey === actionKey(item, 'btc')" @click="buyBtcAlert(item)">
+              {{ busyKey === actionKey(item, 'btc') ? '提交中...' : '买入' }}
+            </button>
+          </div>
         </template>
 
         <template v-else-if="tab === 'news'">
@@ -151,9 +171,12 @@
           </div>
           <div class="card-note">最新 {{ tab === 'weatherSmart' ? '天气' : '' }}BUY：{{ item.last_buy_trade?.title_zh || item.last_buy_trade?.title || '-' }}</div>
           <div class="card-note">{{ item.risk_note }}</div>
-          <button class="action-btn primary" :disabled="!item.last_buy_trade || (tab === 'weatherSmart' && !item.weather_qualified) || busyKey === actionKey(item, 'smart-follow')" @click="followSmartMoney(item)">
-            {{ busyKey === actionKey(item, 'smart-follow') ? '提交中...' : (tab === 'weatherSmart' ? '跟买天气BUY' : '跟买最近BUY') }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'smart-advice')" @click="reviewAdvice(smartAdviceItem(item), 'smart_money', smartAdviceContext(item))">AI风控</button>
+            <button class="action-btn primary" :disabled="!item.last_buy_trade || (tab === 'weatherSmart' && !item.weather_qualified) || busyKey === actionKey(item, 'smart-follow')" @click="followSmartMoney(item)">
+              {{ busyKey === actionKey(item, 'smart-follow') ? '提交中...' : (tab === 'weatherSmart' ? '跟买天气BUY' : '跟买最近BUY') }}
+            </button>
+          </div>
         </template>
       </div>
     </div>
@@ -172,6 +195,7 @@ const quickAmount = ref(10)
 const busyKey = ref('')
 const smartAutoSeconds = ref(0)
 const aiConfigId = ref<number | null>(null)
+const aiProviders = ref<any[]>([])
 let smartAutoTimer: ReturnType<typeof setInterval> | null = null
 
 const tabs = [
@@ -290,6 +314,19 @@ async function confirmAdvice(item: any, kind: string, amount: number, context: a
     return false
   }
   return window.confirm(data.confirm_text)
+}
+
+async function reviewAdvice(item: any, kind: string, context: any = {}) {
+  const key = actionKey(item, `${kind}-advice`)
+  busyKey.value = key
+  try {
+    const { data } = await opportunityApi.advice({ kind, item, amount: Number(quickAmount.value || 0), context })
+    window.alert(data.confirm_text || data.summary || '没有风控结果')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 风控失败')
+  } finally {
+    busyKey.value = ''
+  }
 }
 
 async function quickBuy(row: any, action: string, extra: any = {}) {
@@ -518,6 +555,18 @@ async function reviewMobileAi(item: any, kind: 'news' | 'schedule') {
   }
 }
 
+function smartAdviceItem(item: any) {
+  const trade = item.last_buy_trade || item
+  return { ...trade, ...item, last_buy_trade: trade }
+}
+
+function smartAdviceContext(item: any) {
+  if (item.category === 'weather') {
+    return { wallet: item.wallet, category: 'weather', min_weather_win_rate: 55, min_weather_closed: 2 }
+  }
+  return { wallet: item.wallet }
+}
+
 function followSmartMoney(item: any) {
   const trade = item.last_buy_trade
   if (!trade?.token_id) {
@@ -575,7 +624,7 @@ function resetSmartAutoRefresh() {
     smartAutoTimer = null
   }
   const seconds = Number(smartAutoSeconds.value || 0)
-  if (tab.value === 'smart' && seconds >= 5) {
+  if ((tab.value === 'smart' || tab.value === 'weatherSmart') && seconds >= 5) {
     smartAutoTimer = setInterval(() => {
       loadData()
     }, seconds * 1000)
@@ -587,6 +636,7 @@ watch([smartAutoSeconds, tab], resetSmartAutoRefresh)
 onMounted(() => {
   loadData()
   aiApi.providers().then(({ data }) => {
+    aiProviders.value = data || []
     if (data?.[0]) aiConfigId.value = data[0].id
   }).catch(() => {})
 })
@@ -605,6 +655,7 @@ onUnmounted(() => {
 .seg-tab.active { border-color: #409eff; color: #409eff; background: #ecf5ff; font-weight: bold; }
 .trade-bar { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; color: #606266; }
 .trade-bar input { flex: 1; min-width: 0; height: 32px; border: 1px solid #dcdfe6; border-radius: 6px; padding: 0 8px; font-size: 14px; }
+.trade-select { flex: 1; min-width: 0; height: 32px; border: 1px solid #dcdfe6; border-radius: 6px; padding: 0 8px; font-size: 13px; background: #fff; }
 .scan-btn { height: 32px; border: 1px solid #409eff; color: #409eff; background: #fff; border-radius: 6px; padding: 0 12px; }
 .scan-btn.danger { border-color: #f56c6c; color: #f56c6c; }
 .list { display: flex; flex-direction: column; gap: 8px; }

@@ -43,6 +43,23 @@
             <input type="number" v-model.number="amount" min="1" class="sheet-input" />
           </div>
 
+          <div class="ai-panel">
+            <div class="ai-row">
+              <select v-model="aiConfigId" class="ai-select" :disabled="aiBusy">
+                <option :value="null">AI模型</option>
+                <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
+              <label class="ai-check">
+                <input v-model="aiBeforeOrder" type="checkbox" />
+                下单前AI
+              </label>
+            </div>
+            <button class="ai-btn" :disabled="aiBusy || !aiConfigId" @click="reviewOrderAi">
+              {{ aiBusy ? 'AI复核中...' : 'AI复核' }}
+            </button>
+            <div v-if="aiResult" class="ai-result" :class="{ danger: aiBlocked }">{{ aiResult }}</div>
+          </div>
+
           <button class="sheet-submit" :disabled="ordering" @click="placeOrder">
             {{ ordering ? '下单中...' : `买入 ${direction}` }}
           </button>
@@ -53,9 +70,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { btcApi } from '../../api'
 import { ElMessage } from 'element-plus'
+import { useMobileAiReview } from './useMobileAiReview'
 
 const loading = ref(false)
 const markets = ref<any[]>([])
@@ -65,6 +83,18 @@ const selectedMarket = ref<any>(null)
 const direction = ref('UP')
 const amount = ref(10)
 const ordering = ref(false)
+const {
+  providers,
+  aiConfigId,
+  aiBeforeOrder,
+  aiBusy,
+  aiResult,
+  aiBlocked,
+  loadAiProviders,
+  resetAiReview,
+  runAiReview,
+  confirmAiBeforeOrder,
+} = useMobileAiReview()
 
 const timeTabs = [
   { key: '5m', label: '5分钟' },
@@ -93,6 +123,33 @@ function getNoPrice(m: any) {
 function selectMarket(m: any) {
   selectedMarket.value = m
   showSheet.value = true
+  resetAiReview()
+}
+
+function currentAiPayload() {
+  const m = selectedMarket.value
+  const mk = m?.markets?.[0] || {}
+  const horizonMap: Record<string, number> = { '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440 }
+  return {
+    kind: 'btc' as const,
+    side: direction.value,
+    amount: Number(amount.value || 0),
+    title: m?.title_zh || m?.title || 'BTC 短周期',
+    yes_price: Number(mk.yes_price || 0.5),
+    no_price: Number(mk.no_price || 0.5),
+    end_date_bj: m?.end_time_bj || '',
+    horizon_minutes: horizonMap[activeTab.value] || 15,
+    market_slug: mk.slug || m?.event_slug || '',
+    context: {
+      series_label: m?.series_label,
+      start_time_bj: m?.start_time_bj,
+      end_time_bj: m?.end_time_bj,
+    },
+  }
+}
+
+function reviewOrderAi() {
+  return runAiReview(currentAiPayload())
 }
 
 async function loadMarkets() {
@@ -110,6 +167,7 @@ async function placeOrder() {
   if (!mk?.token_ids?.length) { ElMessage.warning('缺少 token 信息'); return }
   const tokenId = direction.value === 'DOWN' ? mk.token_ids[1] : mk.token_ids[0]
   if (!tokenId) { ElMessage.warning('缺少对应方向 token'); return }
+  if (!await confirmAiBeforeOrder(currentAiPayload())) return
   ordering.value = true
   try {
     const { data } = await btcApi.order({
@@ -130,7 +188,12 @@ async function placeOrder() {
   } finally { ordering.value = false }
 }
 
-onMounted(loadMarkets)
+watch([direction, amount, selectedMarket], resetAiReview)
+
+onMounted(() => {
+  loadMarkets()
+  loadAiProviders()
+})
 </script>
 
 <style scoped>
@@ -312,6 +375,69 @@ onMounted(loadMarkets)
 
 .sheet-submit:disabled {
   opacity: 0.6;
+}
+
+.ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.ai-select {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.ai-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
+}
+
+.ai-btn {
+  height: 34px;
+  border: 1px solid #409eff;
+  color: #409eff;
+  background: #ecf5ff;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.ai-btn:disabled { opacity: 0.5; }
+
+.ai-result {
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #303133;
+  background: #f5f7fa;
+  border-left: 3px solid #409eff;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.ai-result.danger {
+  border-left-color: #f56c6c;
+  background: #fef0f0;
 }
 
 .empty-hint {
