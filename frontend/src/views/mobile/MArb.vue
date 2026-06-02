@@ -13,7 +13,7 @@
       <span>{{ tradeBarLabel }}</span>
       <input v-if="tab !== 'schedule'" v-model.number="quickAmount" type="number" min="1" step="1" />
       <input v-if="tab === 'smart' || tab === 'weatherSmart'" v-model.number="smartAutoSeconds" type="number" min="0" step="5" placeholder="刷新秒" />
-      <select v-if="tab === 'news' || tab === 'schedule'" v-model="aiConfigId" class="trade-select">
+      <select v-if="tab === 'news' || tab === 'schedule' || tab === 'weatherSmart'" v-model="aiConfigId" class="trade-select">
         <option :value="null">AI模型</option>
         <option v-for="p in aiProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
@@ -172,9 +172,10 @@
           <div class="card-note">最新 {{ tab === 'weatherSmart' ? '天气' : '' }}BUY：{{ item.last_buy_trade?.title_zh || item.last_buy_trade?.title || '-' }}</div>
           <div class="card-note">{{ item.risk_note }}</div>
           <div class="action-row">
-            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'smart-advice')" @click="reviewAdvice(smartAdviceItem(item), 'smart_money', smartAdviceContext(item))">AI风控</button>
-            <button class="action-btn primary" :disabled="!item.last_buy_trade || (tab === 'weatherSmart' && !item.weather_qualified) || busyKey === actionKey(item, 'smart-follow')" @click="followSmartMoney(item)">
-              {{ busyKey === actionKey(item, 'smart-follow') ? '提交中...' : (tab === 'weatherSmart' ? '跟买天气BUY' : '跟买最近BUY') }}
+            <button v-if="tab === 'weatherSmart'" class="action-btn secondary" :disabled="busyKey === actionKey(item, 'weather-ai')" @click="reviewWeatherAi(item)">AI复核</button>
+            <button v-else class="action-btn secondary" :disabled="busyKey === actionKey(item, 'smart-advice')" @click="reviewAdvice(smartAdviceItem(item), 'smart_money', smartAdviceContext(item))">AI风控</button>
+            <button class="action-btn primary" :disabled="!item.last_buy_trade || (tab === 'weatherSmart' && !item.weather_qualified) || busyKey === actionKey(item, tab === 'weatherSmart' ? 'weather-smart-follow' : 'smart-follow')" @click="followSmartMoney(item)">
+              {{ busyKey === actionKey(item, tab === 'weatherSmart' ? 'weather-smart-follow' : 'smart-follow') ? '提交中...' : (tab === 'weatherSmart' ? '跟买天气BUY' : '跟买最近BUY') }}
             </button>
           </div>
         </template>
@@ -524,7 +525,7 @@ async function confirmMobileAi(item: any, kind: 'news' | 'schedule', side: strin
     })
     const text = data.result || ''
     window.alert(text)
-    if (/结论[:：]\s*禁止|禁止下单|不要下单|不建议/.test(text)) return false
+    if (aiReviewBlocks(text)) return false
     return window.confirm(`AI 未阻断，继续提交 ${side} FOK 买入？`)
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
@@ -555,6 +556,93 @@ async function reviewMobileAi(item: any, kind: 'news' | 'schedule') {
   }
 }
 
+function aiReviewBlocks(text: string) {
+  return /结论[:：]\s*禁止|禁止下单|不要下单|不建议下单|不建议买入|不建议买|信息不足/.test(text || '')
+}
+
+function weatherAiPayload(item: any, side = '') {
+  const trade = item.last_buy_trade || {}
+  return {
+    kind: 'weather_copy_trade',
+    side,
+    amount_usdc: Number(quickAmount.value || 0),
+    wallet: item.wallet,
+    trader: item.pseudonym || item.name,
+    smart_score: item.smart_score,
+    total_notional: item.total_notional,
+    weather_closed_count: item.weather_closed_count,
+    weather_closed_win_rate: item.weather_closed_win_rate,
+    weather_closed_pnl: item.weather_closed_pnl,
+    weather_qualified: item.weather_qualified,
+    risk_note: item.risk_note,
+    latest_buy: {
+      title: trade.title_zh || trade.title,
+      outcome: trade.outcome,
+      price: trade.price,
+      size: trade.size,
+      notional: trade.notional,
+      timestamp_bj: trade.timestamp_bj,
+      market_slug: trade.market_slug,
+    },
+    recent_weather_trades: (item.recent_trades || []).slice(0, 6).map((tradeItem: any) => ({
+      time: tradeItem.timestamp_bj,
+      side: tradeItem.side,
+      title: tradeItem.title_zh || tradeItem.title,
+      outcome: tradeItem.outcome,
+      price: tradeItem.price,
+      notional: tradeItem.notional,
+    })),
+  }
+}
+
+function weatherAiPrompt(item: any, side = '') {
+  return `请复核这个 Polymarket 天气市场跟单机会。
+
+要求：
+1. 第一行必须写：结论：通过 / 谨慎 / 禁止。
+2. 判断最新 BUY 是否确实是天气市场，钱包天气历史样本是否足够，当前价格是否还适合跟买 ${side || 'BUY'}。
+3. 天气市场容易受规则、数据源、到期时间和盘口跳变影响；若无法确认规则、样本不足、未达标、价格追高或信息不足，请写“结论：禁止”或“结论：谨慎”。
+4. 用简体中文，给出 3 条以内理由和明确操作建议。
+
+数据：
+${JSON.stringify(weatherAiPayload(item, side), null, 2)}`
+}
+
+async function fetchWeatherAiReview(item: any, side = '') {
+  if (!aiConfigId.value) {
+    ElMessage.warning('没有可用 AI 模型，请先到设置页配置并启用 AI')
+    return ''
+  }
+  const key = actionKey(item, 'weather-ai')
+  busyKey.value = key
+  try {
+    const { data } = await aiApi.analyze({
+      ai_config_id: aiConfigId.value,
+      system_prompt: '你是 Polymarket 天气市场交易前风控员，资金安全第一。必须用简体中文回答，第一行必须给出结论。',
+      prompt: weatherAiPrompt(item, side),
+    })
+    return data.result || ''
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
+    return ''
+  } finally {
+    busyKey.value = ''
+  }
+}
+
+async function reviewWeatherAi(item: any) {
+  const text = await fetchWeatherAiReview(item)
+  if (text) window.alert(text)
+}
+
+async function confirmWeatherAi(item: any, side = 'BUY') {
+  const text = await fetchWeatherAiReview(item, side)
+  if (!text) return false
+  window.alert(text)
+  if (aiReviewBlocks(text)) return false
+  return window.confirm(`AI 未阻断，继续提交天气 ${side} 跟买？`)
+}
+
 function smartAdviceItem(item: any) {
   const trade = item.last_buy_trade || item
   return { ...trade, ...item, last_buy_trade: trade }
@@ -567,17 +655,19 @@ function smartAdviceContext(item: any) {
   return { wallet: item.wallet }
 }
 
-function followSmartMoney(item: any) {
+async function followSmartMoney(item: any) {
   const trade = item.last_buy_trade
   if (!trade?.token_id) {
     ElMessage.warning('没有可跟买的最近 BUY token')
     return
   }
+  const isWeather = item.category === 'weather' || tab.value === 'weatherSmart'
+  if (isWeather && !await confirmWeatherAi(item, 'BUY')) return
   const adviceItem = { ...trade, ...item, last_buy_trade: trade }
-  const context = item.category === 'weather'
+  const context = isWeather
     ? { wallet: item.wallet, category: 'weather', min_weather_win_rate: 55, min_weather_closed: 2 }
     : { wallet: item.wallet }
-  return quickBuy(adviceItem, 'smart-follow', {
+  return quickBuy(adviceItem, isWeather ? 'weather-smart-follow' : 'smart-follow', {
     token_id: trade.token_id,
     market_slug: trade.market_slug || '',
     condition_id: trade.condition_id || '',

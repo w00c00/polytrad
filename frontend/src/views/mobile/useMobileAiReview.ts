@@ -81,7 +81,7 @@ export function useMobileAiReview() {
 
   async function runAiReview(payload: ReviewPayload) {
     if (!aiConfigId.value) {
-      ElMessage.warning('没有可用 AI 模型，请先在设置里配置')
+      ElMessage.warning('没有可用 AI 模型，请先到设置页配置并启用 AI')
       return null
     }
     aiBusy.value = true

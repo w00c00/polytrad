@@ -568,6 +568,9 @@
                 <span style="margin-right:8px">样本</span>
                 <el-input-number v-model="weatherSmartParams.min_weather_closed" :min="0" :max="200" size="small" style="width:85px;margin-right:8px" />
                 <el-switch v-model="weatherSmartParams.qualified_only" size="small" active-text="只看达标" style="margin-right:8px" />
+                <el-select v-model="aiConfigId" placeholder="AI模型" size="small" style="width:130px;margin-right:8px">
+                  <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
+                </el-select>
                 <el-button size="small" type="primary" :loading="weatherSmartLoading" @click="loadWeatherSmartMoney">扫描</el-button>
               </div>
             </div>
@@ -620,8 +623,8 @@
             </el-table-column>
             <el-table-column label="操作" width="170" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" type="info" link @click="showAdvice(smartAdviceItem(row), 'smart_money', quickAmount, weatherAdviceContext(row))">AI</el-button>
-                <el-button size="small" type="primary" :disabled="!row.weather_qualified || !row.last_buy_trade" :loading="actionLoading === actionKey(row, 'weather-smart-follow')" @click="followSmartMoney(row, 'weather')">跟买天气BUY</el-button>
+                <el-button size="small" type="info" link :loading="intelAiLoading === actionKey(row, 'weather-ai')" @click="runWeatherAiReview(row)">AI复核</el-button>
+                <el-button size="small" type="primary" :disabled="!row.weather_qualified || !row.last_buy_trade" :loading="actionLoading === actionKey(row, 'weather-smart-follow') || intelAiLoading === actionKey(row, 'weather-ai')" @click="followSmartMoney(row, 'weather')">跟买天气BUY</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1117,6 +1120,99 @@ async function confirmIntelAi(row: any, kind: 'news' | 'schedule', side: string)
   return true
 }
 
+function weatherIntelPayload(row: any, side = '') {
+  const trade = row.last_buy_trade || {}
+  return {
+    kind: 'weather_copy_trade',
+    side,
+    amount_usdc: Number(quickAmount.value || 0),
+    wallet: row.wallet,
+    trader: row.pseudonym || row.name,
+    smart_score: row.smart_score,
+    total_notional: row.total_notional,
+    weather_closed_count: row.weather_closed_count,
+    weather_closed_win_rate: row.weather_closed_win_rate,
+    weather_closed_pnl: row.weather_closed_pnl,
+    weather_qualified: row.weather_qualified,
+    risk_note: row.risk_note,
+    latest_buy: {
+      title: trade.title_zh || trade.title,
+      outcome: trade.outcome,
+      price: trade.price,
+      size: trade.size,
+      notional: trade.notional,
+      timestamp_bj: trade.timestamp_bj,
+      market_slug: trade.market_slug,
+    },
+    recent_weather_trades: (row.recent_trades || []).slice(0, 8).map((tradeItem: any) => ({
+      time: tradeItem.timestamp_bj,
+      side: tradeItem.side,
+      title: tradeItem.title_zh || tradeItem.title,
+      outcome: tradeItem.outcome,
+      price: tradeItem.price,
+      notional: tradeItem.notional,
+    })),
+  }
+}
+
+function weatherIntelPrompt(row: any, side = '') {
+  return `请对下面这个 Polymarket 天气市场跟单机会做下单前复核。
+
+要求：
+1. 第一行必须写：结论：通过 / 谨慎 / 禁止。
+2. 判断最新 BUY 是否确实是天气市场，钱包天气历史样本和胜率是否足够，当前价格是否还适合跟买 ${side || 'BUY'}。
+3. 天气市场容易受规则、数据源、到期时间和盘口跳变影响；若无法确认规则、样本不足、未达标、价格追高或信息不足，请写“结论：禁止”或“结论：谨慎”。
+4. 用简体中文，给出 3 条以内理由和明确操作建议。
+
+数据：
+${JSON.stringify(weatherIntelPayload(row, side), null, 2)}`
+}
+
+async function fetchWeatherAiReview(row: any, side = '') {
+  if (!aiConfigId.value) {
+    ElMessage.warning('请先选择 AI 模型')
+    return ''
+  }
+  const key = actionKey(row, 'weather-ai')
+  intelAiLoading.value = key
+  intelAiTitle.value = `天气跟单：${row.pseudonym || row.name || row.wallet || 'AI 复核'}`
+  intelAiResult.value = ''
+  try {
+    const { data } = await aiApi.analyze({
+      ai_config_id: aiConfigId.value,
+      system_prompt: '你是 Polymarket 天气市场交易前风控员，任务是保守把关，资金安全第一。必须用简体中文回答。',
+      prompt: weatherIntelPrompt(row, side),
+    })
+    intelAiResult.value = data.result || ''
+    intelAiVisible.value = true
+    return intelAiResult.value
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
+    return ''
+  } finally {
+    intelAiLoading.value = ''
+  }
+}
+
+async function runWeatherAiReview(row: any) {
+  await fetchWeatherAiReview(row)
+}
+
+async function confirmWeatherAi(row: any, side = 'BUY') {
+  const result = await fetchWeatherAiReview(row, side)
+  if (!result) return false
+  if (aiReviewBlocks(result)) {
+    await ElMessageBox.alert(result, 'AI 复核阻断', { type: 'error', confirmButtonText: '知道了' })
+    return false
+  }
+  await ElMessageBox.confirm(`AI 复核未阻断。\n\n${result.slice(0, 700)}\n\n仍要继续提交天气 ${side} 跟买吗？`, '确认 AI 复核结果', {
+    type: 'warning',
+    confirmButtonText: '继续提交',
+    cancelButtonText: '取消',
+  })
+  return true
+}
+
 async function buyBasket(row: any, askAmount = false) {
   if (!row?.event_slug) return
   if (!row.integrity?.ok) {
@@ -1390,6 +1486,7 @@ async function followSmartMoney(row: any, category = 'smart') {
     ElMessage.warning('没有可跟买的最近 BUY token')
     return
   }
+  if (category === 'weather' && !await confirmWeatherAi(row, 'BUY')) return
   const adviceItem = smartAdviceItem(row)
   const key = category === 'weather' ? 'weather-smart-follow' : 'smart-follow'
   return quickBuy(adviceItem, quickAmount.value, key, {

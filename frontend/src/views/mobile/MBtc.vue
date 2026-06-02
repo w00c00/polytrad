@@ -54,7 +54,7 @@
                 下单前AI
               </label>
             </div>
-            <button class="ai-btn" :disabled="aiBusy || !aiConfigId" @click="reviewOrderAi">
+            <button class="ai-btn" :disabled="aiBusy" @click="reviewOrderAi">
               {{ aiBusy ? 'AI复核中...' : 'AI复核' }}
             </button>
             <div v-if="aiResult" class="ai-result" :class="{ danger: aiBlocked }">{{ aiResult }}</div>
