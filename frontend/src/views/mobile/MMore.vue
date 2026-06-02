@@ -18,6 +18,11 @@
           <span class="menu-label">机会中心</span>
           <span class="menu-arrow">›</span>
         </div>
+        <div class="menu-item" @click="$router.push('/m/strategy')">
+          <span class="menu-icon">◎</span>
+          <span class="menu-label">策略观察</span>
+          <span class="menu-arrow">›</span>
+        </div>
         <div class="menu-item" @click="$router.push('/m/settings')">
           <span class="menu-icon">⚙️</span>
           <span class="menu-label">设置</span>

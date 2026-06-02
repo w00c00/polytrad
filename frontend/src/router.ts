@@ -40,6 +40,7 @@ const routes = [
       { path: 'hot', name: 'MHot', component: () => import('./views/mobile/MHot.vue') },
       { path: 'political', name: 'MPolitical', component: () => import('./views/mobile/MPolitical.vue') },
       { path: 'arbitrage', name: 'MArb', component: () => import('./views/mobile/MArb.vue') },
+      { path: 'strategy', name: 'MStrategyWatch', component: () => import('./views/mobile/MStrategyWatch.vue') },
       { path: 'settings', name: 'MSettings', component: () => import('./views/mobile/MSettings.vue') },
     ],
   },
