@@ -27,11 +27,19 @@
             <el-form-item>
               <template #label>
                 <span>Funder 地址</span>
-                <el-tooltip content="MetaMask 充值钱包地址，即你在 Polymarket 网站上充值 USDC 的那个钱包地址。如果留空则使用私钥对应的地址。" placement="top">
+                <el-tooltip content="EOA 可留空。Proxy/Safe/Deposit 模式必须填写 Polymarket 实际持有资金的钱包地址。" placement="top">
                   <el-icon style="margin-left:4px;cursor:pointer"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </template>
-              <el-input v-model="walletForm.funder_address" placeholder="MetaMask 充值地址 (0x...)" />
+              <el-input v-model="walletForm.funder_address" placeholder="EOA 留空；Proxy/Safe/Deposit 填资金地址" />
+            </el-form-item>
+            <el-form-item label="签名类型">
+              <el-select v-model="walletForm.signature_type" style="width:100%">
+                <el-option v-for="item in signatureTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+              <el-text size="small" type="info" style="margin-top:6px;display:block">
+                普通私钥钱包选 EOA；Polymarket Deposit 钱包通常选 Deposit/1271。
+              </el-text>
             </el-form-item>
             <el-form-item label="链 ID">
               <el-radio-group v-model="walletForm.chain_id">
@@ -47,6 +55,9 @@
           <el-divider>已有钱包</el-divider>
           <el-table :data="wallets" size="small">
             <el-table-column prop="wallet_address" label="地址" show-overflow-tooltip />
+            <el-table-column label="签名" width="120">
+              <template #default="{ row }">{{ signatureTypeLabel(row.signature_type) }}</template>
+            </el-table-column>
             <el-table-column prop="chain_id" label="链" width="80" />
             <el-table-column label="状态" width="80">
               <template #default="{ row }">
@@ -125,13 +136,21 @@
 import { ref, reactive, onMounted } from 'vue'
 import { walletApi, notifyApi, authApi } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 
 const walletLoading = ref(false)
 const wallets = ref<any[]>([])
 const notifyConfigs = ref<any[]>([])
 const notifyTab = ref('serverchan')
 
-const walletForm = reactive({ private_key: '', funder_address: '', chain_id: 137 })
+const signatureTypeOptions = [
+  { value: 0, label: 'EOA (0)' },
+  { value: 1, label: 'Proxy (1)' },
+  { value: 2, label: 'Safe (2)' },
+  { value: 3, label: 'Deposit/1271 (3)' },
+]
+
+const walletForm = reactive({ private_key: '', funder_address: '', chain_id: 137, signature_type: 0 })
 const scForm = reactive({ sendkey: '' })
 const tgForm = reactive({ bot_token: '', chat_id: '' })
 const pwdForm = reactive({ old_password: '', new_password: '' })
@@ -151,12 +170,27 @@ async function changePwd() {
 }
 
 async function setupWallet() {
+  if (walletForm.signature_type > 0 && !walletForm.funder_address.trim()) {
+    ElMessage.warning('Proxy/Safe/Deposit 钱包必须填写 Funder 地址')
+    return
+  }
   walletLoading.value = true
   try {
-    await walletApi.setup(walletForm)
+    await walletApi.setup({
+      private_key: walletForm.private_key,
+      funder_address: walletForm.signature_type === 0 ? '' : walletForm.funder_address.trim(),
+      chain_id: walletForm.chain_id,
+      signature_type: walletForm.signature_type,
+    })
     ElMessage.success('钱包配置成功')
+    walletForm.private_key = ''
     loadWallets()
   } catch {} finally { walletLoading.value = false }
+}
+
+function signatureTypeLabel(value: number | string | null | undefined) {
+  const type = Number(value || 0)
+  return signatureTypeOptions.find((item) => item.value === type)?.label || `未知(${type})`
 }
 
 async function loadWallets() {

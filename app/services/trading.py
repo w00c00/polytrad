@@ -28,6 +28,7 @@ _AssetType = None
 CLOB_TIMEOUT = 25
 VALID_SIDES = {"BUY", "SELL"}
 VALID_ORDER_TYPES = {"GTC", "FOK", "FAK", "GTD"}
+VALID_SIGNATURE_TYPES = {0, 1, 2, 3}
 
 
 def _load_clob_libs():
@@ -54,6 +55,29 @@ async def _run_clob(func, *args, timeout: float = CLOB_TIMEOUT, **kwargs):
     return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
 
 
+def _norm_addr(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _effective_signature_type(cred: Credential) -> tuple[int, str | None]:
+    """Return CLOB signature_type/funder while keeping old wallet rows usable."""
+    wallet_addr = _norm_addr(cred.wallet_address)
+    funder = str(cred.funder_address or "").strip() or None
+    funder_addr = _norm_addr(funder)
+    stored_sig = int(getattr(cred, "signature_type", 0) or 0)
+    if stored_sig not in VALID_SIGNATURE_TYPES:
+        raise ValueError("钱包签名类型无效，请在设置里重新配置钱包")
+
+    # Old rows stored funder_address=wallet_address even for ordinary EOA wallets.
+    if not funder_addr or funder_addr == wallet_addr:
+        return 0, None
+
+    # Backward compatibility: before signature_type existed, non-empty funder implied 3.
+    if stored_sig == 0:
+        return 3, funder
+    return stored_sig, funder
+
+
 async def get_clob_client(user: User, db: AsyncSession):
     """为用户创建已认证的 ClobClient"""
     _load_clob_libs()
@@ -69,6 +93,7 @@ async def get_clob_client(user: User, db: AsyncSession):
     api_secret = decrypt_secret(cred.encrypted_api_secret)
     api_passphrase = decrypt_secret(cred.encrypted_api_passphrase)
 
+    signature_type, funder = _effective_signature_type(cred)
     kwargs = {
         "host": get_settings().polymarket_clob_host,
         "chain_id": cred.chain_id,
@@ -80,9 +105,11 @@ async def get_clob_client(user: User, db: AsyncSession):
         ),
         "retry_on_error": True,
     }
-    if cred.funder_address:
-        kwargs["signature_type"] = 3
-        kwargs["funder"] = cred.funder_address
+    if signature_type > 0:
+        if not funder:
+            raise ValueError("当前钱包签名类型需要 Funder 地址，请在设置里重新配置钱包")
+        kwargs["signature_type"] = signature_type
+        kwargs["funder"] = funder
     return _ClobClient(**kwargs)
 
 

@@ -361,18 +361,34 @@ def _market_trade_fields(market: dict) -> dict:
     }
 
 
-async def _ensure_market_safe_to_buy(market_slug: str) -> None:
+async def _market_metadata_for_order(market_slug: str, token_id: str = "") -> dict:
+    """Fetch fresh Gamma metadata so copy-trade orders use the correct exchange/tick fields."""
     if not market_slug:
-        return
+        return {}
     try:
         market = await gamma_api.get_market_by_slug(market_slug)
     except Exception:
-        return
+        return {}
     if not market:
-        return
+        return {}
     now = datetime.now(timezone.utc)
     if not _is_tradable_market(market, now):
         raise ValueError("该市场已结束、进入结算或当前不接单，禁止从机会页下单")
+    token_ids = _market_token_ids(market)
+    if token_id and token_ids and str(token_id) not in {str(t) for t in token_ids}:
+        raise ValueError("token 与市场元数据不匹配，禁止下单")
+    return {
+        "market_slug": market.get("slug") or market_slug,
+        "condition_id": market.get("conditionId") or "",
+        "tick_size": _market_tick_size(market),
+        "neg_risk": bool(market.get("negRisk", False)),
+        "token_ids": token_ids,
+        "accepting_orders": market.get("acceptingOrders", True),
+    }
+
+
+async def _ensure_market_safe_to_buy(market_slug: str) -> None:
+    await _market_metadata_for_order(market_slug)
 
 
 async def cross_event_pair_depth(
@@ -904,7 +920,12 @@ async def quick_buy_token(
     market_slug: str = "",
     condition_id: str = "",
 ) -> dict:
-    await _ensure_market_safe_to_buy(market_slug)
+    metadata = await _market_metadata_for_order(market_slug, token_id)
+    if metadata:
+        market_slug = metadata.get("market_slug") or market_slug
+        condition_id = metadata.get("condition_id") or condition_id
+        tick_size = metadata.get("tick_size") or tick_size
+        neg_risk = bool(metadata.get("neg_risk", neg_risk))
     if size > 0 and limit_price > 0:
         result = await place_limit_order(
             user, db,

@@ -31,8 +31,9 @@ class UserResp(BaseModel):
 # === Wallet ===
 class WalletSetupReq(BaseModel):
     private_key: str
-    funder_address: str
+    funder_address: str = ""
     chain_id: int = 137
+    signature_type: int = 0
 
 
 class WalletResp(BaseModel):
@@ -40,6 +41,7 @@ class WalletResp(BaseModel):
     wallet_address: str
     funder_address: str | None = None
     chain_id: int
+    signature_type: int = 0
     is_active: bool
     created_at: datetime
 

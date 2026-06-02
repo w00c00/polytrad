@@ -10,6 +10,8 @@ from app.services.trading import setup_wallet
 
 router = APIRouter(prefix="/api/wallet", tags=["钱包"])
 
+VALID_SIGNATURE_TYPES = {0, 1, 2, 3}
+
 
 @router.post("/setup", response_model=WalletResp)
 async def configure_wallet(req: WalletSetupReq, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -20,20 +22,34 @@ async def configure_wallet(req: WalletSetupReq, user: User = Depends(get_current
     if result.scalar_one_or_none():
         raise HTTPException(400, "已有活跃钱包配置，请先停用后再新建")
 
+    signature_type = int(req.signature_type or 0)
+    funder_address = (req.funder_address or "").strip() or None
+    if signature_type not in VALID_SIGNATURE_TYPES:
+        raise HTTPException(400, "签名类型必须是 0(EOA)、1(Proxy)、2(Safe) 或 3(Deposit/1271)")
+    if signature_type > 0 and not funder_address:
+        raise HTTPException(400, "Proxy/Safe/Deposit 钱包必须填写 Funder 地址")
+
     try:
-        wallet_info = await setup_wallet(req.private_key, req.chain_id, req.funder_address or "")
+        wallet_info = await setup_wallet(req.private_key, req.chain_id, funder_address or "")
     except Exception as e:
         raise HTTPException(400, f"钱包初始化失败: {e}")
 
+    wallet_address = wallet_info["wallet_address"]
+    if signature_type == 0:
+        funder_address = None
+    elif funder_address and funder_address.lower() == wallet_address.lower():
+        raise HTTPException(400, "非 EOA 签名类型的 Funder 地址不能和私钥地址相同")
+
     cred = Credential(
         user_id=user.id,
-        wallet_address=wallet_info["wallet_address"],
-        funder_address=req.funder_address or wallet_info["wallet_address"],
+        wallet_address=wallet_address,
+        funder_address=funder_address,
         encrypted_private_key=encrypt_secret(req.private_key),
         encrypted_api_key=encrypt_secret(wallet_info["api_key"]),
         encrypted_api_secret=encrypt_secret(wallet_info["api_secret"]),
         encrypted_api_passphrase=encrypt_secret(wallet_info["api_passphrase"]),
         chain_id=req.chain_id,
+        signature_type=signature_type,
         is_active=True,
     )
     db.add(cred)

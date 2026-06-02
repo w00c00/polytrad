@@ -51,7 +51,7 @@ export const adminApi = {
 
 // Wallet
 export const walletApi = {
-  setup: (data: { private_key: string; funder_address: string; chain_id?: number }) => api.post('/wallet/setup', data),
+  setup: (data: { private_key: string; funder_address?: string; chain_id?: number; signature_type?: number }) => api.post('/wallet/setup', data),
   list: () => api.get('/wallet/list'),
   deactivate: (id: number) => api.post(`/wallet/${id}/deactivate`),
   activate: (id: number) => api.post(`/wallet/${id}/activate`),
