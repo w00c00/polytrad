@@ -82,7 +82,7 @@
           <el-select v-model="aiConfigId" placeholder="选择AI模型" size="small" style="width:100%;margin-bottom:8px">
             <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
-          <el-button size="small" type="primary" @click="runPredict" :loading="predicting" :disabled="!selectedEvent || !aiConfigId" style="width:100%">
+          <el-button size="small" type="primary" @click="runPredict" :loading="predicting" :disabled="!selectedEvent" style="width:100%">
             AI 概率预测
           </el-button>
           <div v-if="prediction" style="margin-top:12px;white-space:pre-wrap;font-size:13px">{{ prediction }}</div>
@@ -188,7 +188,14 @@ async function placeOrder() {
 }
 
 async function runPredict() {
-  if (!selectedEvent.value || !aiConfigId.value) return
+  if (!selectedEvent.value) {
+    ElMessage.warning('请先选择赛事')
+    return
+  }
+  if (!aiConfigId.value) {
+    ElMessage.warning('没有可用 AI 模型，请先到设置页配置并启用 AI')
+    return
+  }
   predicting.value = true
   try {
     const { data } = await sportsApi.predict(aiConfigId.value, selectedEvent.value.event_slug)
