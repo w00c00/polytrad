@@ -253,6 +253,9 @@
                 <el-input-number v-model="quickAmount" :min="1" :max="1000" size="small" style="width:110px;margin-right:8px" />
                 <span style="margin-right:8px">小时</span>
                 <el-input-number v-model="resolutionParams.hours" :min="1" :max="168" size="small" style="width:100px;margin-right:8px" />
+                <el-select v-model="aiConfigId" placeholder="AI模型" size="small" style="width:130px;margin-right:8px">
+                  <el-option v-for="p in aiProviders" :key="p.id" :label="p.name" :value="p.id" />
+                </el-select>
                 <el-button size="small" type="primary" :loading="resolutionLoading" @click="loadResolution">扫描</el-button>
               </div>
             </div>
@@ -277,12 +280,12 @@
             <el-table-column label="24h量" width="110">
               <template #default="{ row }">${{ Math.round(row.volume_24h).toLocaleString() }}</template>
             </el-table-column>
-	            <el-table-column label="操作" width="185" fixed="right">
-	              <template #default="{ row }">
-	                <el-button size="small" type="info" link @click="showAdvice(row, 'resolution', quickAmount)">AI</el-button>
-	                <el-button size="small" type="primary" link :disabled="!row.can_buy" :loading="actionLoading === actionKey(row, 'res-yes')" @click="buyOutcome(row, 0, 'YES')">买YES</el-button>
-	                <el-button size="small" type="primary" link :disabled="!row.can_buy || !row.token_ids?.[1]" :loading="actionLoading === actionKey(row, 'res-no')" @click="buyOutcome(row, 1, 'NO')">买NO</el-button>
-	              </template>
+		            <el-table-column label="操作" width="185" fixed="right">
+		              <template #default="{ row }">
+		                <el-button size="small" type="info" link :loading="intelAiLoading === actionKey(row, 'resolution-ai')" @click="runResolutionAiReview(row)">AI复核</el-button>
+		                <el-button size="small" type="primary" link :disabled="!row.can_buy" :loading="actionLoading === actionKey(row, 'res-yes') || intelAiLoading === actionKey(row, 'resolution-ai')" @click="buyOutcome(row, 0, 'YES')">买YES</el-button>
+		                <el-button size="small" type="primary" link :disabled="!row.can_buy || !row.token_ids?.[1]" :loading="actionLoading === actionKey(row, 'res-no') || intelAiLoading === actionKey(row, 'resolution-ai')" @click="buyOutcome(row, 1, 'NO')">买NO</el-button>
+		              </template>
             </el-table-column>
           </el-table>
         </el-card>
@@ -1120,6 +1123,89 @@ async function confirmIntelAi(row: any, kind: 'news' | 'schedule', side: string)
   return true
 }
 
+function resolutionIntelPayload(row: any, side = '') {
+  return {
+    kind: 'resolution',
+    side,
+    amount_usdc: Number(quickAmount.value || 0),
+    title: row.question_zh || row.question || row.title_zh || row.title,
+    yes_price: row.yes_price,
+    no_price: row.no_price,
+    best_bid: row.best_bid,
+    best_ask: row.best_ask,
+    hours_left: row.hours_left,
+    end_date_bj: row.end_date_bj,
+    uma_status: row.uma_status,
+    can_buy: row.can_buy,
+    trade_disabled_reason: row.trade_disabled_reason,
+    volume_24h: row.volume_24h,
+    liquidity: row.liquidity,
+    note: row.note,
+  }
+}
+
+function resolutionIntelPrompt(row: any, side = '') {
+  return `请对下面这个 Polymarket 临近结算机会做下单前复核。
+
+要求：
+1. 第一行必须写：结论：通过 / 谨慎 / 禁止。
+2. 临近结算不是套利，请判断用户准备买入 ${side || 'YES/NO'} 是否有足够信息优势，以及当前价格是否已经把结果充分定价。
+3. 必须检查到期时间、UMA/结算状态、是否仍可接单；若进入 proposed/resolved/disputed、已过期、不接单、信息不足、方向不确定或不建议买入 ${side || '该方向'}，请写“结论：禁止”。
+4. 只允许小额 FOK；不要建议 GTC 残单。用简体中文，短而直接。
+
+数据：
+${JSON.stringify(resolutionIntelPayload(row, side), null, 2)}`
+}
+
+async function fetchResolutionAiReview(row: any, side = '') {
+  if (!aiConfigId.value) {
+    ElMessage.warning('请先选择 AI 模型')
+    return ''
+  }
+  const key = actionKey(row, 'resolution-ai')
+  intelAiLoading.value = key
+  intelAiTitle.value = row.question_zh || row.question || row.title_zh || row.title || '临近结算 AI 复核'
+  intelAiResult.value = ''
+  try {
+    const { data } = await aiApi.analyze({
+      ai_config_id: aiConfigId.value,
+      system_prompt: '你是 Polymarket 临近结算交易前风控员，任务是保守把关，资金安全第一。必须用简体中文回答。',
+      prompt: resolutionIntelPrompt(row, side),
+    })
+    intelAiResult.value = data.result || ''
+    intelAiVisible.value = true
+    return intelAiResult.value
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || 'AI 复核失败')
+    return ''
+  } finally {
+    intelAiLoading.value = ''
+  }
+}
+
+async function runResolutionAiReview(row: any) {
+  await fetchResolutionAiReview(row)
+}
+
+async function confirmResolutionAi(row: any, side: string) {
+  const result = await fetchResolutionAiReview(row, side)
+  if (!result) return false
+  if (aiReviewBlocks(result)) {
+    await ElMessageBox.alert(result, 'AI 复核阻断', { type: 'error', confirmButtonText: '知道了' })
+    return false
+  }
+  try {
+    await ElMessageBox.confirm(`AI 复核未阻断。\n\n${result.slice(0, 700)}\n\n仍要继续提交 ${side} FOK 买入吗？`, '确认 AI 复核结果', {
+      type: 'warning',
+      confirmButtonText: '继续提交',
+      cancelButtonText: '取消',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function weatherIntelPayload(row: any, side = '') {
   const trade = row.last_buy_trade || {}
   return {
@@ -1398,11 +1484,12 @@ async function buyCandidate(row: any) {
   return quickBuy(row, quickAmount.value, 'cross')
 }
 
-function buyOutcome(row: any, idx: number, label: string) {
+async function buyOutcome(row: any, idx: number, label: string) {
   if (!row.can_buy) {
     ElMessage.warning(row.trade_disabled_reason || '该临近结算市场当前不可下单')
     return
   }
+  if (!await confirmResolutionAi(row, label)) return
   return quickBuy(row, quickAmount.value, `res-${label.toLowerCase()}`, {
     token_id: row.token_ids?.[idx],
     advice_kind: 'resolution',

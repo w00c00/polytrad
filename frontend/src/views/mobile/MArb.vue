@@ -13,7 +13,7 @@
       <span>{{ tradeBarLabel }}</span>
       <input v-if="tab !== 'schedule'" v-model.number="quickAmount" type="number" min="1" step="1" />
       <input v-if="tab === 'smart' || tab === 'weatherSmart'" v-model.number="smartAutoSeconds" type="number" min="0" step="5" placeholder="刷新秒" />
-      <select v-if="tab === 'news' || tab === 'schedule' || tab === 'weatherSmart'" v-model="aiConfigId" class="trade-select">
+      <select v-if="tab === 'resolution' || tab === 'news' || tab === 'schedule' || tab === 'weatherSmart'" v-model="aiConfigId" class="trade-select">
         <option :value="null">AI模型</option>
         <option v-for="p in aiProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
@@ -105,9 +105,9 @@
           </div>
           <div class="card-note">结束 {{ item.end_date_bj || '-' }}</div>
           <div class="action-row">
-            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'resolution-advice')" @click="reviewAdvice(item, 'resolution')">AI</button>
-            <button class="action-btn primary" :disabled="!item.can_buy || busyKey === actionKey(item, 'res-yes')" @click="buyOutcome(item, 0, 'YES')">买YES</button>
-            <button class="action-btn primary" :disabled="!item.can_buy || !item.token_ids?.[1] || busyKey === actionKey(item, 'res-no')" @click="buyOutcome(item, 1, 'NO')">买NO</button>
+            <button class="action-btn secondary" :disabled="busyKey === actionKey(item, 'resolution-ai')" @click="reviewMobileAi(item, 'resolution')">AI复核</button>
+            <button class="action-btn primary" :disabled="!item.can_buy || busyKey === actionKey(item, 'resolution-ai') || busyKey === actionKey(item, 'res-yes')" @click="buyOutcome(item, 0, 'YES')">买YES</button>
+            <button class="action-btn primary" :disabled="!item.can_buy || !item.token_ids?.[1] || busyKey === actionKey(item, 'resolution-ai') || busyKey === actionKey(item, 'res-no')" @click="buyOutcome(item, 1, 'NO')">买NO</button>
           </div>
         </template>
 
@@ -445,11 +445,12 @@ async function buyCrossHedge(item: any) {
   }
 }
 
-function buyOutcome(item: any, idx: number, label: string) {
+async function buyOutcome(item: any, idx: number, label: string) {
   if (!item.can_buy) {
     ElMessage.warning(item.trade_disabled_reason || '该临近结算市场当前不可下单')
     return
   }
+  if (!await confirmMobileAi(item, 'resolution', label)) return
   return quickBuy(item, `res-${label.toLowerCase()}`, { token_id: item.token_ids?.[idx], advice_kind: 'resolution' })
 }
 
@@ -498,13 +499,36 @@ function buySchedule(item: any, idx: number, label: string) {
   })
 }
 
-async function confirmMobileAi(item: any, kind: 'news' | 'schedule', side: string) {
-  if (!aiConfigId.value) {
-    ElMessage.warning('没有可用 AI 模型，已阻断新闻/赛程快捷买入')
-    return false
+type MobileIntelKind = 'news' | 'schedule' | 'resolution'
+
+function mobileIntelLabel(kind: MobileIntelKind) {
+  if (kind === 'news') return '新闻催化'
+  if (kind === 'schedule') return '赛程'
+  return '临近结算'
+}
+
+function mobileIntelPayload(item: any, kind: MobileIntelKind, side = '') {
+  if (kind === 'resolution') {
+    return {
+      kind,
+      side,
+      amount_usdc: Number(quickAmount.value || 0),
+      title: item.question_zh || item.question || item.title_zh || item.title,
+      yes_price: item.yes_price,
+      no_price: item.no_price,
+      best_bid: item.best_bid,
+      best_ask: item.best_ask,
+      hours_left: item.hours_left,
+      end_date_bj: item.end_date_bj,
+      uma_status: item.uma_status,
+      can_buy: item.can_buy,
+      trade_disabled_reason: item.trade_disabled_reason,
+      volume_24h: item.volume_24h,
+      liquidity: item.liquidity,
+      note: item.note,
+    }
   }
-  const key = actionKey(item, `${kind}-ai`)
-  const payload = {
+  return {
     kind,
     side,
     title: item.title_zh || item.question_zh || item.title || item.question,
@@ -516,12 +540,36 @@ async function confirmMobileAi(item: any, kind: 'news' | 'schedule', side: strin
     game_time_bj: item.game_time_bj,
     league: item.league || item.league_guess,
   }
+}
+
+function mobileIntelPrompt(item: any, kind: MobileIntelKind, side = '', forOrder = false) {
+  if (kind === 'resolution') {
+    return `请复核这个 Polymarket 临近结算${forOrder ? '交易' : '机会'}。
+
+要求：
+1. 第一行必须写：结论：通过 / 谨慎 / 禁止。
+2. 临近结算不是套利，请判断用户准备买入 ${side || 'YES/NO'} 是否有足够信息优势，以及当前价格是否已经把结果充分定价。
+3. 必须检查到期时间、UMA/结算状态、是否仍可接单；若进入 proposed/resolved/disputed、已过期、不接单、信息不足、方向不确定或不建议买入 ${side || '该方向'}，请写“结论：禁止”。
+4. 只允许小额 FOK；不要建议 GTC 残单。用简体中文，短而直接。
+
+数据：
+${JSON.stringify(mobileIntelPayload(item, kind, side), null, 2)}`
+  }
+  return `请复核这个${mobileIntelLabel(kind)}${forOrder ? '交易' : '机会'}。第一行必须写：结论：通过 / 谨慎 / 禁止。${forOrder ? `若信息不足或不建议买入 ${side}，请写禁止。` : '判断信息是否和市场规则直接相关，以及当前价格是否值得买。'}\n${JSON.stringify(mobileIntelPayload(item, kind, side), null, 2)}`
+}
+
+async function confirmMobileAi(item: any, kind: MobileIntelKind, side: string) {
+  if (!aiConfigId.value) {
+    ElMessage.warning(`没有可用 AI 模型，已阻断${mobileIntelLabel(kind)}快捷买入`)
+    return false
+  }
+  const key = actionKey(item, `${kind}-ai`)
   busyKey.value = key
   try {
     const { data } = await aiApi.analyze({
       ai_config_id: aiConfigId.value,
       system_prompt: '你是 Polymarket 交易前风控员，资金安全第一。必须用简体中文回答。',
-      prompt: `请复核这个${kind === 'news' ? '新闻催化' : '赛程'}交易。第一行必须写：结论：通过 / 谨慎 / 禁止。若信息不足或不建议买入 ${side}，请写禁止。\n${JSON.stringify(payload, null, 2)}`,
+      prompt: mobileIntelPrompt(item, kind, side, true),
     })
     const text = data.result || ''
     window.alert(text)
@@ -535,7 +583,7 @@ async function confirmMobileAi(item: any, kind: 'news' | 'schedule', side: strin
   }
 }
 
-async function reviewMobileAi(item: any, kind: 'news' | 'schedule') {
+async function reviewMobileAi(item: any, kind: MobileIntelKind) {
   if (!aiConfigId.value) {
     ElMessage.warning('没有可用 AI 模型')
     return
@@ -546,7 +594,7 @@ async function reviewMobileAi(item: any, kind: 'news' | 'schedule') {
     const { data } = await aiApi.analyze({
       ai_config_id: aiConfigId.value,
       system_prompt: '你是 Polymarket 交易前风控员，资金安全第一。必须用简体中文回答。',
-      prompt: `请复核这个${kind === 'news' ? '新闻催化' : '赛程'}机会。第一行必须写：结论：通过 / 谨慎 / 禁止。判断信息是否和市场规则直接相关，以及当前价格是否值得买。\n${JSON.stringify(item, null, 2).slice(0, 6000)}`,
+      prompt: mobileIntelPrompt(item, kind),
     })
     window.alert(data.result || 'AI 没有返回内容')
   } catch (err: any) {
